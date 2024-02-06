@@ -22,7 +22,7 @@ pub struct ModIdx(u32);
 pub struct LeafIdx(u32);
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum OriginalNode {
+pub enum StoredNode {
     Branch {
         bit_idx: u8,
         left: HashedNode,
@@ -31,7 +31,7 @@ pub enum OriginalNode {
     Leaf(Leaf),
 }
 
-impl OriginalNode {
+impl StoredNode {
     pub fn get_hashed(
         &self,
         key: &[u8],
@@ -41,7 +41,7 @@ impl OriginalNode {
         let mut node = self;
         loop {
             match node {
-                OriginalNode::Branch {
+                StoredNode::Branch {
                     bit_idx,
                     left,
                     right,
@@ -55,9 +55,11 @@ impl OriginalNode {
 
                     node = data_store.get(next_node_hash).ok_or("Node not found")?;
                 }
-                OriginalNode::Leaf(leaf) => {
+                StoredNode::Leaf(leaf) => {
                     if leaf.key == key {
                         return Ok(Some(leaf.clone()));
+                    } else if *hash != hash_key(leaf.key.as_slice()) {
+                        return Err("Provided key an Hash do not match hash".to_string());
                     } else {
                         return Ok(None);
                     }
@@ -65,6 +67,12 @@ impl OriginalNode {
             }
         }
     }
+}
+
+fn hash_key(key: &[u8]) -> HashedKey {
+    let mut hasher = Sha256::new();
+    hasher.update(key);
+    HashedKey(hasher.finalize().into())
 }
 
 /// A node that has been modified in a transaction.
@@ -96,19 +104,19 @@ pub struct Leaf {
     pub value: Vec<u8>,
 }
 
-pub type DataStore = HashMap<HashedNode, OriginalNode>;
+pub type DataStore = HashMap<HashedNode, StoredNode>;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub enum TrieRoot {
     #[default]
     Empty,
-    OrgNode(HashedNode),
-    ModNode(ModifiedNode),
+    StoredNode(HashedNode),
+    ModifiedNode(ModifiedNode),
 }
 
 pub struct Transaction {
     pub data_store: DataStore,
-    pub original_tree: Vec<(HashedNode, OriginalNode)>,
+    pub original_tree: Vec<(HashedNode, StoredNode)>,
 
     pub current_root: TrieRoot,
     pub modified_nodes: Vec<ModifiedNode>,
@@ -127,17 +135,14 @@ impl Transaction {
     }
 
     pub fn get(&self, key: &[u8]) -> Result<Option<Leaf>, String> {
-        let mut hasher = Sha256::new();
-        hasher.update(key);
-        let hash = hasher.finalize();
-        self.get_hashed(key, &HashedKey(hash.into()))
+        self.get_hashed(key, &hash_key(key))
     }
 
     pub fn get_hashed(&self, key: &[u8], hash: &HashedKey) -> Result<Option<Leaf>, String> {
         match &self.current_root {
             TrieRoot::Empty => Ok(None),
-            TrieRoot::ModNode(node) => self.get_modified(node, key, hash),
-            TrieRoot::OrgNode(node) => {
+            TrieRoot::ModifiedNode(node) => self.get_modified(node, key, hash),
+            TrieRoot::StoredNode(node) => {
                 let original_node = self.data_store.get(node).ok_or("Node not found")?;
                 original_node.get_hashed(key, hash, &self.data_store)
             }
@@ -203,6 +208,8 @@ impl Transaction {
                     let leaf = &self.modified_leafs[leaf_idx.0 as usize];
                     if leaf.key == key {
                         return Ok(Some(leaf.clone()));
+                    } else if *hash != hash_key(leaf.key.as_slice()) {
+                        return Err("Provided key an Hash do not match hash".to_string());
                     } else {
                         return Ok(None);
                     }
