@@ -11,11 +11,11 @@ pub struct HashedNode(pub [u8; 32]);
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[repr(transparent)]
-pub struct OrgIdx(u32);
+pub struct StoredIdx(u32);
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[repr(transparent)]
-pub struct ModIdx(u32);
+pub struct ModifiedIdx(u32);
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[repr(transparent)]
@@ -82,18 +82,18 @@ fn hash_key(key: &[u8]) -> HashedKey {
 pub enum ModifiedNode {
     BranchBoth {
         bit_idx: u8,
-        left: ModIdx,
-        right: ModIdx,
+        left: ModifiedIdx,
+        right: ModifiedIdx,
     },
     BranchLeft {
         bit_idx: u8,
-        left: ModIdx,
-        right: OrgIdx,
+        left: ModifiedIdx,
+        right: StoredIdx,
     },
     BranchRight {
         bit_idx: u8,
-        left: OrgIdx,
-        right: ModIdx,
+        left: StoredIdx,
+        right: ModifiedIdx,
     },
     Leaf(LeafIdx),
 }
