@@ -5,6 +5,8 @@ use sha2::{Digest, Sha256};
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct HashedKey(pub [u8; 32]);
+
+/// TODO: Switch to usize for more efficient bit indexing.
 type HashedKeyBits = BitSlice<u8, Lsb0>;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
