@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, iter};
 
 use bitvec::prelude::*;
 use sha2::{Digest, Sha256};
@@ -9,17 +9,29 @@ pub struct HashedKey(pub [u8; 32]);
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct HashedNode(pub [u8; 32]);
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[repr(transparent)]
 pub struct StoredIdx(u32);
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[repr(transparent)]
 pub struct ModifiedIdx(u32);
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+impl From<usize> for ModifiedIdx {
+    fn from(idx: usize) -> Self {
+        ModifiedIdx(idx as u32)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[repr(transparent)]
 pub struct LeafIdx(u32);
+
+impl From<usize> for LeafIdx {
+    fn from(idx: usize) -> Self {
+        LeafIdx(idx as u32)
+    }
+}
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum StoredNode {
@@ -77,8 +89,9 @@ fn hash_key(key: &[u8]) -> HashedKey {
 
 /// A node that has been modified in a transaction.
 ///
-/// Note: This merged representation is 16 bytes, a naive representation would be 20 bytes.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+/// Note: This merged representation is more efficient than nesting an enum `StoredIdx` | `ModifiedIdx`
+/// We could replace the Leaf variant indirection by adding more variants.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum ModifiedNode {
     BranchBoth {
         bit_idx: u8,
@@ -111,7 +124,7 @@ pub enum TrieRoot {
     #[default]
     Empty,
     StoredNode(HashedNode),
-    ModifiedNode(ModifiedNode),
+    ModifiedNode(ModifiedIdx),
 }
 
 pub struct Transaction {
@@ -120,7 +133,7 @@ pub struct Transaction {
 
     pub current_root: TrieRoot,
     pub modified_nodes: Vec<ModifiedNode>,
-    pub modified_leafs: Vec<Leaf>,
+    pub modified_leafs: Vec<(HashedKey, Leaf)>,
 }
 
 impl Transaction {
@@ -141,7 +154,7 @@ impl Transaction {
     pub fn get_hashed(&self, key: &[u8], hash: &HashedKey) -> Result<Option<Leaf>, String> {
         match &self.current_root {
             TrieRoot::Empty => Ok(None),
-            TrieRoot::ModifiedNode(node) => self.get_modified(node, key, hash),
+            TrieRoot::ModifiedNode(node_idx) => self.get_modified(*node_idx, key, hash),
             TrieRoot::StoredNode(node) => {
                 let original_node = self.data_store.get(node).ok_or("Node not found")?;
                 original_node.get_hashed(key, hash, &self.data_store)
@@ -151,11 +164,11 @@ impl Transaction {
 
     fn get_modified(
         &self,
-        node: &ModifiedNode,
+        node: ModifiedIdx,
         key: &[u8],
         hash: &HashedKey,
     ) -> Result<Option<Leaf>, String> {
-        let mut node = node;
+        let mut node = &self.modified_nodes[node.0 as usize];
         loop {
             match node {
                 ModifiedNode::BranchBoth {
@@ -205,7 +218,7 @@ impl Transaction {
                     }
                 }
                 ModifiedNode::Leaf(leaf_idx) => {
-                    let leaf = &self.modified_leafs[leaf_idx.0 as usize];
+                    let (_, leaf) = &self.modified_leafs[leaf_idx.0 as usize];
                     if leaf.key == key {
                         return Ok(Some(leaf.clone()));
                     } else if *hash != hash_key(leaf.key.as_slice()) {
@@ -214,6 +227,125 @@ impl Transaction {
                         return Ok(None);
                     }
                 }
+            }
+        }
+    }
+
+    pub fn insert(&mut self, key: Vec<u8>, value: Vec<u8>) {
+        let hash = hash_key(key.as_slice());
+
+        match self.current_root {
+            TrieRoot::ModifiedNode(node_idx) => {
+                // we init the prior node to a leaf with a dummy index
+                let mut node_idx = ModifiedIdx(node_idx.0);
+                let mut prior_bit_idx = 0;
+                loop {
+                    let node = self.modified_nodes[node_idx.0 as usize];
+                    match node {
+                        ModifiedNode::BranchBoth {
+                            bit_idx,
+                            left,
+                            right,
+                        } => {
+                            let bit_slice = BitSlice::<u8, Lsb0>::from_slice(hash.0.as_ref());
+                            let next_node_idx = if bit_slice[bit_idx as usize] {
+                                right
+                            } else {
+                                left
+                            };
+
+                            node_idx = next_node_idx;
+                            prior_bit_idx = bit_idx;
+                        }
+                        ModifiedNode::BranchLeft {
+                            bit_idx,
+                            left,
+                            right,
+                        } => {
+                            let bit_slice = BitSlice::<u8, Lsb0>::from_slice(hash.0.as_ref());
+                            if bit_slice[bit_idx as usize] {
+                                todo!();
+                            } else {
+                                node_idx = left;
+                                prior_bit_idx = bit_idx;
+                            }
+                        }
+                        ModifiedNode::BranchRight {
+                            bit_idx,
+                            left,
+                            right,
+                        } => {
+                            let bit_slice = BitSlice::<u8, Lsb0>::from_slice(hash.0.as_ref());
+                            if bit_slice[bit_idx as usize] {
+                                node_idx = right;
+                                prior_bit_idx = bit_idx;
+                            } else {
+                                todo!();
+                            }
+                        }
+                        ModifiedNode::Leaf(old_leaf_idx) => {
+                            let (old_key, old_leaf) =
+                                &mut self.modified_leafs[old_leaf_idx.0 as usize];
+
+                            if key.as_slice() == old_key.0.as_slice() {
+                                old_leaf.value = value;
+                                return;
+                            } else {
+                                let prior_bit_idx = prior_bit_idx as usize;
+                                let old_bits = &BitSlice::<u8, Lsb0>::from_slice(hash.0.as_ref())
+                                    [prior_bit_idx..];
+                                let new_bits = &BitSlice::<u8, Lsb0>::from_slice(hash.0.as_ref())
+                                    [prior_bit_idx..];
+
+                                // This can be optimized by applying word wise comparison first
+                                let Some((bit_idx, new_bit)) = iter::zip(old_bits, new_bits)
+                                    .enumerate()
+                                    .find(|(_, (a, b))| a != b)
+                                    .map(|(idx, (_, b))| (idx, *b))
+                                else {
+                                    // TODO: Error the hashes are equal, but the keys are not
+                                    return;
+                                };
+
+                                let bit_idx = (prior_bit_idx + bit_idx) as u8;
+
+                                let moved_old_leaf_node_idx: ModifiedIdx =
+                                    self.modified_nodes.len().into();
+                                self.modified_nodes.push(ModifiedNode::Leaf(old_leaf_idx));
+
+                                let new_leaf_idx: LeafIdx = self.modified_leafs.len().into();
+                                self.modified_leafs.push((hash, Leaf { key, value }));
+                                let new_leaf_node_idx: ModifiedIdx =
+                                    self.modified_nodes.len().into();
+                                self.modified_nodes.push(ModifiedNode::Leaf(new_leaf_idx));
+
+                                let (left, right) = if new_bit {
+                                    (moved_old_leaf_node_idx, new_leaf_node_idx)
+                                } else {
+                                    (new_leaf_node_idx, moved_old_leaf_node_idx)
+                                };
+
+                                self.modified_nodes[node_idx.0 as usize] =
+                                    ModifiedNode::BranchBoth {
+                                        bit_idx,
+                                        left,
+                                        right,
+                                    };
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+            TrieRoot::StoredNode(ref node_hash) => {
+                // self.insert_stored(node_hash, hash,);
+                todo!();
+            }
+            TrieRoot::Empty => {
+                self.modified_leafs.push((hash, Leaf { key, value }));
+                let leaf_idx = LeafIdx((self.modified_leafs.len() - 1) as u32);
+                self.modified_nodes.push(ModifiedNode::Leaf(leaf_idx));
+                self.current_root = TrieRoot::ModifiedNode(ModifiedIdx(0));
             }
         }
     }
