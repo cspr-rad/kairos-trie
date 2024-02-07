@@ -5,6 +5,7 @@ use sha2::{Digest, Sha256};
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct HashedKey(pub [u8; 32]);
+type HashedKeyBits = BitSlice<u8, Lsb0>;
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct HashedNode(pub [u8; 32]);
@@ -58,7 +59,7 @@ impl StoredNode {
                     left,
                     right,
                 } => {
-                    let bit_slice = BitSlice::<u8, Lsb0>::from_slice(hash.0.as_ref());
+                    let bit_slice = HashedKeyBits::from_slice(hash.0.as_ref());
                     let next_node_hash = if bit_slice[*bit_idx as usize] {
                         right
                     } else {
@@ -176,7 +177,7 @@ impl Transaction {
                     left,
                     right,
                 } => {
-                    let bit_slice = BitSlice::<u8, Lsb0>::from_slice(hash.0.as_ref());
+                    let bit_slice = HashedKeyBits::from_slice(hash.0.as_ref());
                     let next_node_idx = if bit_slice[*bit_idx as usize] {
                         right
                     } else {
@@ -190,7 +191,7 @@ impl Transaction {
                     left,
                     right,
                 } => {
-                    let bit_slice = BitSlice::<u8, Lsb0>::from_slice(hash.0.as_ref());
+                    let bit_slice = HashedKeyBits::from_slice(hash.0.as_ref());
                     if bit_slice[*bit_idx as usize] {
                         return self.original_tree[right.0 as usize].1.get_hashed(
                             key,
@@ -206,7 +207,7 @@ impl Transaction {
                     left,
                     right,
                 } => {
-                    let bit_slice = BitSlice::<u8, Lsb0>::from_slice(hash.0.as_ref());
+                    let bit_slice = HashedKeyBits::from_slice(hash.0.as_ref());
                     if bit_slice[*bit_idx as usize] {
                         node = &self.modified_nodes[right.0 as usize];
                     } else {
@@ -232,7 +233,7 @@ impl Transaction {
     }
 
     pub fn insert(&mut self, key: Vec<u8>, value: Vec<u8>) {
-        let hash = hash_key(key.as_slice());
+        let new_key_hash = hash_key(key.as_slice());
 
         match self.current_root {
             TrieRoot::ModifiedNode(node_idx) => {
@@ -247,7 +248,7 @@ impl Transaction {
                             left,
                             right,
                         } => {
-                            let bit_slice = BitSlice::<u8, Lsb0>::from_slice(hash.0.as_ref());
+                            let bit_slice = HashedKeyBits::from_slice(new_key_hash.0.as_ref());
                             let next_node_idx = if bit_slice[bit_idx as usize] {
                                 right
                             } else {
@@ -262,7 +263,7 @@ impl Transaction {
                             left,
                             right,
                         } => {
-                            let bit_slice = BitSlice::<u8, Lsb0>::from_slice(hash.0.as_ref());
+                            let bit_slice = HashedKeyBits::from_slice(new_key_hash.0.as_ref());
                             if bit_slice[bit_idx as usize] {
                                 todo!();
                             } else {
@@ -275,7 +276,7 @@ impl Transaction {
                             left,
                             right,
                         } => {
-                            let bit_slice = BitSlice::<u8, Lsb0>::from_slice(hash.0.as_ref());
+                            let bit_slice = HashedKeyBits::from_slice(new_key_hash.0.as_ref());
                             if bit_slice[bit_idx as usize] {
                                 node_idx = right;
                                 prior_bit_idx = bit_idx;
@@ -284,18 +285,18 @@ impl Transaction {
                             }
                         }
                         ModifiedNode::Leaf(old_leaf_idx) => {
-                            let (old_key, old_leaf) =
+                            let (old_key_hash, old_leaf) =
                                 &mut self.modified_leafs[old_leaf_idx.0 as usize];
 
-                            if key.as_slice() == old_key.0.as_slice() {
+                            if key.as_slice() == old_leaf.key.as_slice() {
                                 old_leaf.value = value;
                                 return;
                             } else {
                                 let prior_bit_idx = prior_bit_idx as usize;
-                                let old_bits = &BitSlice::<u8, Lsb0>::from_slice(hash.0.as_ref())
-                                    [prior_bit_idx..];
-                                let new_bits = &BitSlice::<u8, Lsb0>::from_slice(hash.0.as_ref())
-                                    [prior_bit_idx..];
+                                let old_bits =
+                                    &HashedKeyBits::from_slice(&old_key_hash.0)[prior_bit_idx..];
+                                let new_bits =
+                                    &HashedKeyBits::from_slice(&new_key_hash.0)[prior_bit_idx..];
 
                                 // This can be optimized by applying word wise comparison first
                                 let Some((bit_idx, new_bit)) = iter::zip(old_bits, new_bits)
@@ -314,7 +315,8 @@ impl Transaction {
                                 self.modified_nodes.push(ModifiedNode::Leaf(old_leaf_idx));
 
                                 let new_leaf_idx: LeafIdx = self.modified_leafs.len().into();
-                                self.modified_leafs.push((hash, Leaf { key, value }));
+                                self.modified_leafs
+                                    .push((new_key_hash, Leaf { key, value }));
                                 let new_leaf_node_idx: ModifiedIdx =
                                     self.modified_nodes.len().into();
                                 self.modified_nodes.push(ModifiedNode::Leaf(new_leaf_idx));
@@ -342,7 +344,8 @@ impl Transaction {
                 todo!();
             }
             TrieRoot::Empty => {
-                self.modified_leafs.push((hash, Leaf { key, value }));
+                self.modified_leafs
+                    .push((new_key_hash, Leaf { key, value }));
                 let leaf_idx = LeafIdx((self.modified_leafs.len() - 1) as u32);
                 self.modified_nodes.push(ModifiedNode::Leaf(leaf_idx));
                 self.current_root = TrieRoot::ModifiedNode(ModifiedIdx(0));
