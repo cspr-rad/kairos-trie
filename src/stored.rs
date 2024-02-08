@@ -12,11 +12,3 @@ pub enum StoredNode {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct NodeHash(pub [u8; 32]);
-
-pub struct HashIdx(pub u32);
-
-impl From<usize> for HashIdx {
-    fn from(idx: usize) -> Self {
-        HashIdx(idx as u32)
-    }
-}

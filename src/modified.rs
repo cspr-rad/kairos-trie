@@ -1,45 +1,50 @@
 use std::ops::Index;
 
-use crate::{stored::HashIdx, Leaf};
+use crate::{KeyHash, Leaf, NodeHash};
 
 /// We may need to merge the `Branch` and `NodeRef` types into a single type.
 /// That would give us a 16 byte layout, where bit_idx: u32.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Branch {
-    bit_idx: u8,
-    left: NodeRef,
-    right: NodeRef,
+    pub bit_idx: u8,
+    pub left: NodeRef,
+    pub right: NodeRef,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum NodeRef {
     ModLeaf(LeafIdx),
-    ModNode(NodeIdx),
-    StoredNode(HashIdx),
+    ModNode(BranchIdx),
+    // TODO: take NodeHash by reference or index
+    StoredNode(NodeHash),
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
 pub struct Branches(pub Vec<Branch>);
 
-impl Index<NodeIdx> for Branches {
+impl Index<BranchIdx> for Branches {
     type Output = Branch;
-    fn index(&self, idx: NodeIdx) -> &Branch {
+    fn index(&self, idx: BranchIdx) -> &Branch {
         &self.0[idx.0 as usize]
     }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 #[repr(transparent)]
-pub struct NodeIdx(pub u32);
+pub struct BranchIdx(pub u32);
 
-impl From<usize> for NodeIdx {
+impl From<usize> for BranchIdx {
     fn from(idx: usize) -> Self {
-        NodeIdx(idx as u32)
+        BranchIdx(idx as u32)
     }
 }
 
-pub struct Leaves(pub Vec<Leaf>);
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+pub struct Leaves(pub Vec<(KeyHash, Leaf)>);
 
 impl Index<LeafIdx> for Leaves {
-    type Output = Leaf;
-    fn index(&self, idx: LeafIdx) -> &Leaf {
+    type Output = (KeyHash, Leaf);
+    fn index(&self, idx: LeafIdx) -> &(KeyHash, Leaf) {
         &self.0[idx.0 as usize]
     }
 }
