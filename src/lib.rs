@@ -292,40 +292,16 @@ impl<S: Store> Transaction<S> {
 
             let bit_slice = HashedKeyBits::from_slice(&key_hash.0);
 
-            let mut next_mod_ref = |node| -> Result<NodeRef<_, _>, String> {
-                match node {
+            let mut next_mod_ref = |next_node| -> Result<NodeRef<_, _>, String> {
+                match next_node {
                     stored::Node::Branch(br) => {
                         branch_ref = br;
                         Ok(NodeRef::ModBranch(BranchIdx(
+                            // refers to the branch that will be inserted in the next iteration
                             self.modified_branches.0.len() as u32 + 1,
                         )))
                     }
-                    stored::Node::Leaf(lr) => {
-                        let leaf = self.data_store.get_leaf(lr)?;
-
-                        let leaf_idx = self.modified_leaves.push(
-                            *key_hash,
-                            Leaf {
-                                key: key.to_vec(),
-                                value: value.to_vec(),
-                            },
-                        );
-
-                        if leaf.key == key {
-                            Ok(NodeRef::ModLeaf(leaf_idx))
-                        } else {
-                            let new_branch_idx =
-                                self.modified_branches.push(Branch::from_hashed_key_bits(
-                                    branch.bit_idx,
-                                    NodeRef::ModLeaf(leaf_idx),
-                                    key_hash,
-                                    &hash_key(&leaf.key),
-                                    NodeRef::StoredLeaf(lr),
-                                ));
-
-                            Ok(NodeRef::ModBranch(new_branch_idx))
-                        }
-                    }
+                    stored::Node::Leaf(lr) => self.insert_stored_leaf(lr, key, value, key_hash),
                 }
             };
 
@@ -335,7 +311,8 @@ impl<S: Store> Transaction<S> {
                 (next_mod_ref(branch.left)?, branch.right.into())
             };
 
-            self.modified_branches.0.push(Branch {
+            // the current branch contains a reference to the next branch or leaf
+            self.modified_branches.push(Branch {
                 bit_idx: branch.bit_idx,
                 left,
                 right,
@@ -344,24 +321,34 @@ impl<S: Store> Transaction<S> {
     }
 
     fn insert_stored_leaf(
-        parent_ref: &mut NodeRef<S::BranchRef, S::BranchRef>,
-        data_store: S,
+        &mut self,
         leaf_ref: S::LeafRef,
         key: &[u8],
         value: &[u8],
-        key_hash: KeyHash,
-    ) -> Result<(), String> {
-        todo!();
-        // let leaf = data_store.get_leaf(leaf_ref)?;
-        // if leaf.key == key {
-        //     let leaf_idx = LeafIdx(modified_leaves.0.len() as u32);
-        //     modified_leaves.0.push((key_hash, Leaf { key, value }));
+        key_hash: &KeyHash,
+    ) -> Result<NodeRef<S::BranchRef, S::LeafRef>, String> {
+        let leaf = self.data_store.get_leaf(leaf_ref)?;
 
-        //     Ok(())
-        // } else {
-        //     let new_branch_idx = BranchIdx(modified_branches.0.len() as u32);
+        let leaf_idx = self.modified_leaves.push(
+            *key_hash,
+            Leaf {
+                key: key.to_vec(),
+                value: value.to_vec(),
+            },
+        );
 
-        //     Ok(())
-        // }
+        if leaf.key == key {
+            Ok(NodeRef::ModLeaf(leaf_idx))
+        } else {
+            let new_branch_idx = self.modified_branches.push(Branch::from_hashed_key_bits(
+                0,
+                NodeRef::ModLeaf(leaf_idx),
+                key_hash,
+                &hash_key(&leaf.key),
+                NodeRef::StoredLeaf(leaf_ref),
+            ));
+
+            Ok(NodeRef::ModBranch(new_branch_idx))
+        }
     }
 }
