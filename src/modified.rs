@@ -1,30 +1,31 @@
 use std::ops::Index;
 
-use crate::{KeyHash, Leaf, NodeHash};
+use alloc::vec::Vec;
 
-/// We may need to merge the `Branch` and `NodeRef` types into a single type.
-/// That would give us a 16 byte layout, where bit_idx: u32.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Branch {
-    pub bit_idx: u8,
-    pub left: NodeRef,
-    pub right: NodeRef,
-}
+use crate::{KeyHash, Leaf};
+
+type ModBranch<SBR, SLR> = crate::Branch<NodeRef<SBR, SLR>>;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum NodeRef {
+pub enum NodeRef<SBR, SLR> {
+    ModBranch(BranchIdx),
     ModLeaf(LeafIdx),
-    ModNode(BranchIdx),
-    // TODO: take NodeHash by reference or index
-    StoredNode(NodeHash),
+    StoredBranch(SBR),
+    StoredLeaf(SLR),
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
-pub struct Branches(pub Vec<Branch>);
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Branches<SBR, SLR>(pub Vec<ModBranch<SBR, SLR>>);
 
-impl Index<BranchIdx> for Branches {
-    type Output = Branch;
-    fn index(&self, idx: BranchIdx) -> &Branch {
+impl<SBR, SLR> Default for Branches<SBR, SLR> {
+    fn default() -> Self {
+        Branches(Vec::new())
+    }
+}
+
+impl<SBR, SLR> Index<BranchIdx> for Branches<SBR, SLR> {
+    type Output = ModBranch<SBR, SLR>;
+    fn index(&self, idx: BranchIdx) -> &Self::Output {
         &self.0[idx.0 as usize]
     }
 }
