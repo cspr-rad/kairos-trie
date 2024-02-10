@@ -49,16 +49,15 @@ impl<SBR, SLR> Branch<NodeRef<SBR, SLR>> {
         iter::zip(a_bits, b_bits)
             .enumerate()
             .find(|(_, (a, b))| a != b)
-            .map(|(idx, (a, b))| (idx as u8, *b))
-            .map(|(bit_idx, new_bit)| {
-                let (left, right) = if new_bit {
-                    (a_leaf_idx, b_leaf_idx)
-                } else {
+            .map(|(bit_idx, (a_bit, _))| {
+                let (left, right) = if *a_bit {
                     (b_leaf_idx, a_leaf_idx)
+                } else {
+                    (a_leaf_idx, b_leaf_idx)
                 };
 
                 Branch {
-                    bit_idx: prior_bit_idx + bit_idx,
+                    bit_idx: prior_bit_idx + bit_idx as u8,
                     left,
                     right,
                 }
