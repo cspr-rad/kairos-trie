@@ -95,6 +95,8 @@ pub struct Transaction<S: Store> {
     pub modified_leaves: Leaves,
 }
 
+type NodeRefTxn<S> = NodeRef<<S as Store>::BranchRef, <S as Store>::LeafRef>;
+
 impl<S: Store> Transaction<S> {
     pub fn new(root: TrieRoot<S::BranchRef, S::LeafRef>, data_store: S) -> Self {
         Transaction {
@@ -226,21 +228,21 @@ impl<S: Store> Transaction<S> {
     /// Insert a new key value pair into the trie.
     /// Returns the previous value if it existed.
     pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<(), String> {
-        let key_hash = hash_key(&key);
+        let key_hash = hash_key(key);
         self.insert_hashed(key, value, key_hash)
     }
 
     fn insert_hashed(&mut self, key: &[u8], value: &[u8], key_hash: KeyHash) -> Result<(), String> {
         match self.current_root {
             TrieRoot::Empty => {
-                self.modified_leaves.0.push((
+                let node = self.modified_leaves.push(
                     key_hash,
                     Leaf {
                         key: key.to_vec(),
                         value: value.to_vec(),
                     },
-                ));
-                self.current_root = TrieRoot::Node(NodeRef::ModLeaf(LeafIdx(0)));
+                );
+                self.current_root = TrieRoot::Node(NodeRef::ModLeaf(node));
                 Ok(())
             }
             TrieRoot::Node(NodeRef::ModBranch(branch_idx)) => {
@@ -250,22 +252,45 @@ impl<S: Store> Transaction<S> {
                 self.insert_modified_leaf(old_leaf_idx, key, value, key_hash)
             }
             TrieRoot::Node(NodeRef::StoredBranch(branch_ref)) => {
-                self.insert_stored_branch(branch_ref, key, value, &key_hash)
+                self.current_root =
+                    TrieRoot::Node(self.insert_stored_branch(branch_ref, key, value, &key_hash)?);
+                Ok(())
             }
             TrieRoot::Node(NodeRef::StoredLeaf(leaf_ref)) => {
-                todo!();
-                // self.insert_stored_leaf(leaf_ref, key, value, key_hash)
+                self.current_root =
+                    TrieRoot::Node(self.insert_stored_leaf(leaf_ref, key, value, &key_hash)?);
+                Ok(())
             }
         }
     }
 
     fn insert_modified_branch(
         &mut self,
-        branch_idx: BranchIdx,
+        mut branch_idx: BranchIdx,
         key: &[u8],
         value: &[u8],
         key_hash: KeyHash,
     ) -> Result<(), String> {
+        // loop {
+        //     let branch = &mut self.modified_branches[branch_idx];
+
+        //     let bit_slice = HashedKeyBits::from_slice(&key_hash.0);
+
+        //     let next_mod_ref = |next_node| -> Result<NodeRefTxn<S>, String> {
+        //         match next_node {
+        //             NodeRef::ModBranch(br) => {
+        //                 branch_idx = br;
+        //                 Ok(NodeRef::ModBranch(br))
+        //             }
+        //             NodeRef::ModLeaf(lr)
+
+        // if bit_slice[branch.bit_idx as usize] {
+        //     branch_idx = branch.right;
+        // } else {
+        //     branch_idx = branch.left;
+        // }
+
+        // }
         todo!();
     }
 
@@ -285,13 +310,13 @@ impl<S: Store> Transaction<S> {
         key: &[u8],
         value: &[u8],
         key_hash: &KeyHash,
-    ) -> Result<(), String> {
+    ) -> Result<NodeRefTxn<S>, String> {
         loop {
             let branch = self.data_store.get_branch(branch_ref)?;
 
             let bit_slice = HashedKeyBits::from_slice(&key_hash.0);
 
-            let mut next_mod_ref = |next_node| -> Result<NodeRef<_, _>, String> {
+            let mut next_mod_ref = |next_node| -> Result<NodeRefTxn<S>, String> {
                 match next_node {
                     stored::Node::Branch(br) => {
                         branch_ref = br;
@@ -325,7 +350,7 @@ impl<S: Store> Transaction<S> {
         key: &[u8],
         value: &[u8],
         key_hash: &KeyHash,
-    ) -> Result<NodeRef<S::BranchRef, S::LeafRef>, String> {
+    ) -> Result<NodeRefTxn<S>, String> {
         let leaf = self.data_store.get_leaf(leaf_ref)?;
 
         let leaf_idx = self.modified_leaves.push(
