@@ -5,7 +5,8 @@ use alloc::{collections::BTreeMap, fmt::Debug, string::String};
 use crate::Leaf;
 
 #[allow(clippy::type_complexity)]
-pub type NodeRef<S> = Node<<S as Store>::BranchRef, <S as Store>::LeafRef>;
+pub type NodeRef<S> =
+    Node<<S as Store>::BranchRef, <S as Store>::ExtensionRef, <S as Store>::LeafRef>;
 
 pub type Branch<S> = crate::Branch<NodeRef<S>>;
 
@@ -13,6 +14,7 @@ pub trait Store {
     /// The hash of a node or leaf.
     /// Alternatively, this could be a reference or an index that uniquely identifies a node or leaf
     type BranchRef: Ref;
+    type ExtensionRef: Ref;
     type LeafRef: Ref;
     type Error: Into<String>;
 
@@ -21,8 +23,9 @@ pub trait Store {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum Node<B, L> {
+pub enum Node<B, E, L> {
     Branch(B),
+    Extension(E),
     Leaf(L),
 }
 
@@ -45,6 +48,10 @@ pub struct BranchHash(pub [u8; 32]);
 impl Ref for BranchHash {}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct ExtensionHash(pub [u8; 32]);
+impl Ref for ExtensionHash {}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct LeafHash(pub [u8; 32]);
 impl Ref for LeafHash {}
 
@@ -57,6 +64,7 @@ pub struct MemoryStore {
 
 impl Store for MemoryStore {
     type BranchRef = BranchHash;
+    type ExtensionRef = ExtensionHash;
     type LeafRef = LeafHash;
     type Error = Error;
 

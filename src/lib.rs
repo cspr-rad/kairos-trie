@@ -9,7 +9,7 @@ pub mod stored;
 
 use std::iter;
 
-use alloc::{string::String, vec::Vec};
+use alloc::{boxed::Box, string::String, vec::Vec};
 pub use modified::*;
 pub use stored::{Ref, Store};
 
@@ -35,13 +35,13 @@ pub struct Branch<NR> {
     pub right: NR,
 }
 
-impl<SBR, SLR> Branch<NodeRef<SBR, SLR>> {
+impl<SBR, SER, SLR> Branch<NodeRef<SBR, SER, SLR>> {
     pub fn from_hashed_key_bits(
         prior_bit_idx: u8,
-        a_leaf_idx: NodeRef<SBR, SLR>,
+        a_leaf_idx: NodeRef<SBR, SER, SLR>,
         a_hash: &KeyHash,
         b_hash: &KeyHash,
-        b_leaf_idx: NodeRef<SBR, SLR>,
+        b_leaf_idx: NodeRef<SBR, SER, SLR>,
     ) -> Self {
         let a_bits = &HashedKeyBits::from_slice(&a_hash.0)[prior_bit_idx as usize..];
         let b_bits = &HashedKeyBits::from_slice(&b_hash.0)[prior_bit_idx as usize..];
@@ -70,6 +70,12 @@ impl<SBR, SLR> Branch<NodeRef<SBR, SLR>> {
     }
 }
 
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct Extension<SBR, SER, SLR> {
+    next: NodeRef<SBR, SER, SLR>,
+    bits: [u8],
+}
+
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Leaf {
     pub key: Vec<u8>,
@@ -77,10 +83,10 @@ pub struct Leaf {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
-pub enum TrieRoot<SBR: Ref, SLR: Ref> {
+pub enum TrieRoot<SBR, SER, SLR> {
     #[default]
     Empty,
-    Node(NodeRef<SBR, SLR>),
+    Node(NodeRef<SBR, SER, SLR>),
 }
 
 pub struct Transaction<S: Store> {
@@ -90,21 +96,24 @@ pub struct Transaction<S: Store> {
     pub witness_branches: Vec<(S::BranchRef, Branch<stored::NodeRef<S>>)>,
     pub witness_leaves: Vec<(KeyHash, Leaf)>,
 
-    pub current_root: TrieRoot<S::BranchRef, S::LeafRef>,
-    pub modified_branches: Branches<S::BranchRef, S::LeafRef>,
+    pub current_root: TrieRoot<S::BranchRef, S::ExtensionRef, S::LeafRef>,
+    pub modified_branches: Branches<S::BranchRef, S::ExtensionRef, S::LeafRef>,
+    pub modified_extensions: Vec<Box<Extension<S::BranchRef, S::ExtensionRef, S::LeafRef>>>,
     pub modified_leaves: Leaves,
 }
 
-type NodeRefTxn<S> = NodeRef<<S as Store>::BranchRef, <S as Store>::LeafRef>;
+type NodeRefTxn<S> =
+    NodeRef<<S as Store>::BranchRef, <S as Store>::ExtensionRef, <S as Store>::LeafRef>;
 
 impl<S: Store> Transaction<S> {
-    pub fn new(root: TrieRoot<S::BranchRef, S::LeafRef>, data_store: S) -> Self {
+    pub fn new(root: TrieRoot<S::BranchRef, S::ExtensionRef, S::LeafRef>, data_store: S) -> Self {
         Transaction {
             data_store,
             witness_branches: Vec::new(),
             witness_leaves: Vec::new(),
             current_root: root,
             modified_branches: Branches::default(),
+            modified_extensions: Vec::new(),
             modified_leaves: Leaves::default(),
         }
     }
@@ -135,6 +144,8 @@ impl<S: Store> Transaction<S> {
             TrieRoot::Node(NodeRef::StoredLeaf(lr)) => {
                 return self.get_stored_leaf(lr, key, key_hash);
             }
+            TrieRoot::Node(NodeRef::StoredExtension(_)) => todo!(),
+            TrieRoot::Node(NodeRef::ModExtension(_)) => todo!(),
         }
     }
 
@@ -157,6 +168,7 @@ impl<S: Store> Transaction<S> {
                 NodeRef::ModBranch(branch_idx) => {
                     branch = &self.modified_branches[branch_idx];
                 }
+                NodeRef::ModExtension(_) => todo!(),
 
                 NodeRef::ModLeaf(leaf_idx) => {
                     let (leaf_hash, leaf) = &self.modified_leaves[leaf_idx];
@@ -174,6 +186,7 @@ impl<S: Store> Transaction<S> {
                 NodeRef::StoredLeaf(lr) => {
                     return self.get_stored_leaf(lr, key, key_hash);
                 }
+                NodeRef::StoredExtension(_) => todo!(),
             };
         }
     }
@@ -205,6 +218,7 @@ impl<S: Store> Transaction<S> {
                 stored::Node::Leaf(lr) => {
                     return self.get_stored_leaf(lr, key, hash);
                 }
+                stored::Node::Extension(_) => todo!(),
             }
         }
     }
@@ -261,6 +275,8 @@ impl<S: Store> Transaction<S> {
                     TrieRoot::Node(self.insert_stored_leaf(leaf_ref, key, value, &key_hash)?);
                 Ok(())
             }
+            TrieRoot::Node(NodeRef::StoredExtension(_)) => todo!(),
+            TrieRoot::Node(NodeRef::ModExtension(_)) => todo!(),
         }
     }
 
@@ -325,6 +341,7 @@ impl<S: Store> Transaction<S> {
                             self.modified_branches.0.len() as u32 + 1,
                         )))
                     }
+                    stored::Node::Extension(_) => todo!(),
                     stored::Node::Leaf(lr) => self.insert_stored_leaf(lr, key, value, key_hash),
                 }
             };

@@ -4,44 +4,48 @@ use alloc::vec::Vec;
 
 use crate::{stored, KeyHash, Leaf};
 
-type ModBranch<SBR, SLR> = crate::Branch<NodeRef<SBR, SLR>>;
+type ModBranch<SBR, SER, SLR> = crate::Branch<NodeRef<SBR, SER, SLR>>;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum NodeRef<SBR, SLR> {
+pub enum NodeRef<SBR, SER, SLR> {
     ModBranch(BranchIdx),
+    ModExtension(usize),
+
     ModLeaf(LeafIdx),
     StoredBranch(SBR),
+    StoredExtension(SER),
     StoredLeaf(SLR),
 }
 
-impl<SBR, SLR> From<stored::Node<SBR, SLR>> for NodeRef<SBR, SLR> {
-    fn from(node_ref: stored::Node<SBR, SLR>) -> Self {
+impl<SBR, SER, SLR> From<stored::Node<SBR, SER, SLR>> for NodeRef<SBR, SER, SLR> {
+    fn from(node_ref: stored::Node<SBR, SER, SLR>) -> Self {
         match node_ref {
             stored::Node::Branch(branch) => NodeRef::StoredBranch(branch),
+            stored::Node::Extension(extension) => NodeRef::StoredExtension(extension),
             stored::Node::Leaf(leaf) => NodeRef::StoredLeaf(leaf),
         }
     }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Branches<SBR, SLR>(pub Vec<ModBranch<SBR, SLR>>);
+pub struct Branches<SBR, SER, SLR>(pub Vec<ModBranch<SBR, SER, SLR>>);
 
-impl<SBR, SLR> Branches<SBR, SLR> {
-    pub fn push(&mut self, branch: ModBranch<SBR, SLR>) -> BranchIdx {
+impl<SBR, SER, SLR> Branches<SBR, SER, SLR> {
+    pub fn push(&mut self, branch: ModBranch<SBR, SER, SLR>) -> BranchIdx {
         let idx = BranchIdx(self.0.len() as u32);
         self.0.push(branch);
         idx
     }
 }
 
-impl<SBR, SLR> Default for Branches<SBR, SLR> {
+impl<SBR, SER, SLR> Default for Branches<SBR, SER, SLR> {
     fn default() -> Self {
         Branches(Vec::new())
     }
 }
 
-impl<SBR, SLR> Index<BranchIdx> for Branches<SBR, SLR> {
-    type Output = ModBranch<SBR, SLR>;
+impl<SBR, SER, SLR> Index<BranchIdx> for Branches<SBR, SER, SLR> {
+    type Output = ModBranch<SBR, SER, SLR>;
     fn index(&self, idx: BranchIdx) -> &Self::Output {
         &self.0[idx.0 as usize]
     }
