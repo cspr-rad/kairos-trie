@@ -31,41 +31,50 @@ fn hash_key(key: &[u8]) -> KeyHash {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Branch<NR> {
     pub bit_idx: u8,
+    /// The bits of the key hash that are relevant to this branch.
+    /// Contains the bits up to bit_idx.
+    pub prefix_bits: u8,
     pub left: NR,
     pub right: NR,
 }
 
 impl<SBR, SER, SLR> Branch<NodeRef<SBR, SER, SLR>> {
+    /// Create a new branch.
+    /// Returns the byte index of the branch for creating an extension node.
     pub fn from_hashed_key_bits(
-        prior_bit_idx: u8,
+        _prior_bit_idx: u8,
         a_leaf_idx: NodeRef<SBR, SER, SLR>,
         a_hash: &KeyHash,
         b_hash: &KeyHash,
         b_leaf_idx: NodeRef<SBR, SER, SLR>,
-    ) -> Self {
-        let a_bits = &HashedKeyBits::from_slice(&a_hash.0)[prior_bit_idx as usize..];
-        let b_bits = &HashedKeyBits::from_slice(&b_hash.0)[prior_bit_idx as usize..];
-
-        iter::zip(a_bits, b_bits)
+    ) -> (usize, Self) {
+        iter::zip(a_hash.0, b_hash.0)
             .enumerate()
             .find(|(_, (a, b))| a != b)
-            .map(|(bit_idx, (a_bit, _))| {
-                let (left, right) = if *a_bit {
+            .map(|(idx, (a, b))| {
+                let mask = a ^ b;
+                let rel_bit_idx = mask.leading_zeros();
+                let prefix_bits = a ^ mask;
+
+                let (left, right) = if (a >> rel_bit_idx) & 1 == 1 {
                     (b_leaf_idx, a_leaf_idx)
                 } else {
                     (a_leaf_idx, b_leaf_idx)
                 };
 
-                Branch {
-                    bit_idx: prior_bit_idx + bit_idx as u8,
-                    left,
-                    right,
-                }
+                (
+                    idx,
+                    Branch {
+                        bit_idx: idx as u8 * 8 + rel_bit_idx as u8,
+                        prefix_bits,
+                        left,
+                        right,
+                    },
+                )
             })
             .unwrap_or_else(|| {
-                // The hashes are equal, but the keys are not
-                // TODO: handle this case
-                panic!("The hashes are equal, but the keys are not");
+                // TODO handle the case where the two hashes are equal
+                panic!("The two hashes are equal");
             })
     }
 }
@@ -200,6 +209,7 @@ impl<S: Store> Transaction<S> {
         loop {
             let Branch {
                 bit_idx,
+                prefix_bits,
                 left,
                 right,
             } = self.data_store.get_branch(branch_ref)?;
@@ -354,6 +364,7 @@ impl<S: Store> Transaction<S> {
 
             // the current branch contains a reference to the next branch or leaf
             self.modified_branches.push(Branch {
+                prefix_bits: branch.prefix_bits,
                 bit_idx: branch.bit_idx,
                 left,
                 right,
@@ -381,13 +392,15 @@ impl<S: Store> Transaction<S> {
         if leaf.key == key {
             Ok(NodeRef::ModLeaf(leaf_idx))
         } else {
-            let new_branch_idx = self.modified_branches.push(Branch::from_hashed_key_bits(
+            // TODO Create extension
+            let (idx, branch) = Branch::from_hashed_key_bits(
                 0,
-                NodeRef::ModLeaf(leaf_idx),
+                NodeRef::StoredLeaf(leaf_ref),
                 key_hash,
                 &hash_key(&leaf.key),
-                NodeRef::StoredLeaf(leaf_ref),
-            ));
+                NodeRef::ModLeaf(leaf_idx),
+            );
+            let new_branch_idx = self.modified_branches.push(branch);
 
             Ok(NodeRef::ModBranch(new_branch_idx))
         }
