@@ -18,7 +18,8 @@ pub trait Store {
     type LeafRef: Ref;
     type Error: Into<String>;
 
-    fn get_branch(&self, hash: Self::BranchRef) -> Result<Branch<Self>, Error>;
+    fn get_branch(&self, hash: Self::BranchRef) -> Result<&Branch<Node<Self>>, Error>;
+    fn get_extension(&self, hash: Self::ExtensionRef) -> Result<&Extension<Self>, Error>;
     fn get_leaf(&self, hash: Self::LeafRef) -> Result<&Leaf, Error>;
 }
 
@@ -58,7 +59,8 @@ impl Ref for LeafHash {}
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct MemoryStore {
     // TODO: use a indexmap
-    branches: BTreeMap<BranchHash, Branch<Self>>,
+    branches: BTreeMap<BranchHash, Branch<Node<Self>>>,
+    extensions: BTreeMap<ExtensionHash, Box<Extension<Self>>>,
     leaves: BTreeMap<LeafHash, Leaf>,
 }
 
@@ -68,8 +70,15 @@ impl Store for MemoryStore {
     type LeafRef = LeafHash;
     type Error = Error;
 
-    fn get_branch(&self, hash: Self::BranchRef) -> Result<Branch<Self>, Error> {
-        self.branches.get(&hash).cloned().ok_or(Error::NodeNotFound)
+    fn get_branch(&self, hash: Self::BranchRef) -> Result<&Branch<Node<Self>>, Error> {
+        self.branches.get(&hash).ok_or(Error::NodeNotFound)
+    }
+
+    fn get_extension(&self, hash: Self::ExtensionRef) -> Result<&Extension<Self>, Error> {
+        self.extensions
+            .get(&hash)
+            .map(|a| a.deref())
+            .ok_or(Error::NodeNotFound)
     }
 
     fn get_leaf(&self, hash: Self::LeafRef) -> Result<&Leaf, Error> {
