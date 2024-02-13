@@ -1,3 +1,4 @@
+#![allow(clippy::type_complexity)]
 #![cfg_attr(not(feature = "std"), no_std)]
 #[cfg(not(feature = "std"))]
 extern crate core as std;
@@ -79,10 +80,10 @@ impl<SBR, SER, SLR> Branch<NodeRef<SBR, SER, SLR>> {
     }
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Extension<SBR, SER, SLR> {
     next: NodeRef<SBR, SER, SLR>,
-    bits: [u8],
+    bits: Box<[u8]>,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -215,7 +216,7 @@ impl<S: Store> Transaction<S> {
             } = self.data_store.get_branch(branch_ref)?;
 
             let bit_slice = HashedKeyBits::from_slice(hash.0.as_ref());
-            let node_ref = if bit_slice[bit_idx as usize] {
+            let node_ref = if bit_slice[*bit_idx as usize] {
                 right
             } else {
                 left
@@ -223,10 +224,10 @@ impl<S: Store> Transaction<S> {
 
             match node_ref {
                 stored::Node::Branch(br) => {
-                    branch_ref = br;
+                    branch_ref = *br;
                 }
                 stored::Node::Leaf(lr) => {
-                    return self.get_stored_leaf(lr, key, hash);
+                    return self.get_stored_leaf(*lr, key, hash);
                 }
                 stored::Node::Extension(_) => todo!(),
             }
@@ -338,11 +339,16 @@ impl<S: Store> Transaction<S> {
         key_hash: &KeyHash,
     ) -> Result<NodeRefTxn<S>, String> {
         loop {
-            let branch = self.data_store.get_branch(branch_ref)?;
+            let Branch {
+                bit_idx,
+                prefix_bits,
+                left,
+                right,
+            } = *self.data_store.get_branch(branch_ref)?;
 
             let bit_slice = HashedKeyBits::from_slice(&key_hash.0);
 
-            let mut next_mod_ref = |next_node| -> Result<NodeRefTxn<S>, String> {
+            let mut next_mod_ref = |next_node| {
                 match next_node {
                     stored::Node::Branch(br) => {
                         branch_ref = br;
@@ -356,16 +362,16 @@ impl<S: Store> Transaction<S> {
                 }
             };
 
-            let (left, right) = if bit_slice[branch.bit_idx as usize] {
-                (branch.left.into(), next_mod_ref(branch.right)?)
+            let (left, right) = if bit_slice[bit_idx as usize] {
+                (left.into(), next_mod_ref(right)?)
             } else {
-                (next_mod_ref(branch.left)?, branch.right.into())
+                (next_mod_ref(left)?, right.into())
             };
 
             // the current branch contains a reference to the next branch or leaf
             self.modified_branches.push(Branch {
-                prefix_bits: branch.prefix_bits,
-                bit_idx: branch.bit_idx,
+                prefix_bits,
+                bit_idx,
                 left,
                 right,
             });
