@@ -15,7 +15,6 @@ pub use modified::*;
 pub use stored::{Ref, Store};
 
 use bitvec::prelude::*;
-use sha2::{Digest, Sha256};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct KeyHash(pub [u8; 32]);
@@ -23,18 +22,12 @@ pub struct KeyHash(pub [u8; 32]);
 /// TODO: Switch to usize for more efficient bit indexing.
 type HashedKeyBits = BitSlice<u8, Lsb0>;
 
-fn hash_key(key: &[u8]) -> KeyHash {
-    let mut hasher = Sha256::new();
-    hasher.update(key);
-    KeyHash(hasher.finalize().into())
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Branch<NR> {
-    pub bit_idx: u8,
-    /// The bits of the key hash that are relevant to this branch.
-    /// Contains the bits up to bit_idx.
-    pub prefix_bits: u8,
+    // TODO we can make bit_idx a debug only field
+    bit_idx: u8,
+    left_bits: u8,
+    right_bits: u8,
     pub left: NR,
     pub right: NR,
 }
@@ -53,21 +46,21 @@ impl<SBR, SER, SLR> Branch<NodeRef<SBR, SER, SLR>> {
             .enumerate()
             .find(|(_, (a, b))| a != b)
             .map(|(idx, (a, b))| {
-                let mask = a ^ b;
-                let rel_bit_idx = mask.leading_zeros();
-                let prefix_bits = a ^ mask;
+                let matched = a ^ b;
+                let rel_bit_idx = matched.leading_zeros();
 
-                let (left, right) = if (a >> rel_bit_idx) & 1 == 1 {
-                    (b_leaf_idx, a_leaf_idx)
+                let (left, right, left_bits, right_bits) = if (a >> rel_bit_idx) & 1 == 1 {
+                    (b_leaf_idx, a_leaf_idx, b, a)
                 } else {
-                    (a_leaf_idx, b_leaf_idx)
+                    (a_leaf_idx, b_leaf_idx, a, b)
                 };
 
                 (
                     idx,
                     Branch {
                         bit_idx: idx as u8 * 8 + rel_bit_idx as u8,
-                        prefix_bits,
+                        left_bits,
+                        right_bits,
                         left,
                         right,
                     },
@@ -88,7 +81,7 @@ pub struct Extension<SBR, SER, SLR> {
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Leaf {
-    pub key: Vec<u8>,
+    pub key_hash: KeyHash,
     pub value: Vec<u8>,
 }
 
@@ -128,31 +121,25 @@ impl<S: Store> Transaction<S> {
         }
     }
 
-    pub fn get(&mut self, key: &[u8]) -> Result<Option<&Leaf>, String> {
-        self.get_hashed(key, &hash_key(key))
-    }
-
-    fn get_hashed(&mut self, key: &[u8], key_hash: &KeyHash) -> Result<Option<&Leaf>, String> {
+    fn get_hashed(&mut self, key_hash: &KeyHash) -> Result<Option<&Leaf>, String> {
         match self.current_root {
             TrieRoot::Empty => Ok(None),
             TrieRoot::Node(NodeRef::ModLeaf(leaf_idx)) => {
-                let (leaf_key_hash, leaf) = &self.modified_leaves[leaf_idx];
-                if leaf.key == key {
+                let leaf = &self.modified_leaves[leaf_idx];
+                if leaf.key_hash == *key_hash {
                     Ok(Some(leaf))
-                } else if *key_hash != *leaf_key_hash {
-                    Err("Provided key an Hash do not match hash".into())
                 } else {
                     Ok(None)
                 }
             }
             TrieRoot::Node(NodeRef::ModBranch(branch_idx)) => {
-                self.get_modified(branch_idx, key, key_hash)
+                self.get_modified(branch_idx, key_hash)
             }
             TrieRoot::Node(NodeRef::StoredBranch(br)) => {
-                return self.get_stored_branch(br, key, key_hash);
+                return self.get_stored_branch(br, key_hash);
             }
             TrieRoot::Node(NodeRef::StoredLeaf(lr)) => {
-                return self.get_stored_leaf(lr, key, key_hash);
+                return self.get_stored_leaf(lr, key_hash);
             }
             TrieRoot::Node(NodeRef::StoredExtension(_)) => todo!(),
             TrieRoot::Node(NodeRef::ModExtension(_)) => todo!(),
@@ -162,7 +149,6 @@ impl<S: Store> Transaction<S> {
     fn get_modified(
         &self,
         branch_idx: BranchIdx,
-        key: &[u8],
         key_hash: &KeyHash,
     ) -> Result<Option<&Leaf>, String> {
         let mut branch = &self.modified_branches[branch_idx];
@@ -181,20 +167,18 @@ impl<S: Store> Transaction<S> {
                 NodeRef::ModExtension(_) => todo!(),
 
                 NodeRef::ModLeaf(leaf_idx) => {
-                    let (leaf_hash, leaf) = &self.modified_leaves[leaf_idx];
-                    if leaf.key == key {
+                    let leaf = &self.modified_leaves[leaf_idx];
+                    if leaf.key_hash == *key_hash {
                         return Ok(Some(leaf));
-                    } else if *key_hash != *leaf_hash {
-                        return Err("Provided key an Hash do not match hash".into());
                     } else {
                         return Ok(None);
                     }
                 }
                 NodeRef::StoredBranch(br) => {
-                    return self.get_stored_branch(br, key, key_hash);
+                    return self.get_stored_branch(br, key_hash);
                 }
                 NodeRef::StoredLeaf(lr) => {
-                    return self.get_stored_leaf(lr, key, key_hash);
+                    return self.get_stored_leaf(lr, key_hash);
                 }
                 NodeRef::StoredExtension(_) => todo!(),
             };
@@ -204,18 +188,18 @@ impl<S: Store> Transaction<S> {
     pub fn get_stored_branch(
         &self,
         mut branch_ref: S::BranchRef,
-        key: &[u8],
-        hash: &KeyHash,
+        key_hash: &KeyHash,
     ) -> Result<Option<&Leaf>, String> {
         loop {
             let Branch {
                 bit_idx,
-                prefix_bits,
+                left_bits,
+                right_bits,
                 left,
                 right,
             } = self.data_store.get_branch(branch_ref)?;
 
-            let bit_slice = HashedKeyBits::from_slice(hash.0.as_ref());
+            let bit_slice = HashedKeyBits::from_slice(key_hash.0.as_ref());
             let node_ref = if bit_slice[*bit_idx as usize] {
                 right
             } else {
@@ -227,7 +211,7 @@ impl<S: Store> Transaction<S> {
                     branch_ref = *br;
                 }
                 stored::Node::Leaf(lr) => {
-                    return self.get_stored_leaf(*lr, key, hash);
+                    return self.get_stored_leaf(*lr, key_hash);
                 }
                 stored::Node::Extension(_) => todo!(),
             }
@@ -237,53 +221,41 @@ impl<S: Store> Transaction<S> {
     pub fn get_stored_leaf(
         &self,
         leaf: S::LeafRef,
-        key: &[u8],
-        hash: &KeyHash,
+
+        key_hash: &KeyHash,
     ) -> Result<Option<&Leaf>, String> {
         let leaf = self.data_store.get_leaf(leaf)?;
-        if leaf.key == key {
+        if leaf.key_hash == *key_hash {
             Ok(Some(leaf))
-        } else if *hash != hash_key(&leaf.key) {
-            Err("Provided key an Hash do not match hash".into())
         } else {
             Ok(None)
         }
     }
 
-    /// Insert a new key value pair into the trie.
-    /// Returns the previous value if it existed.
-    pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<(), String> {
-        let key_hash = hash_key(key);
-        self.insert_hashed(key, value, key_hash)
-    }
-
-    fn insert_hashed(&mut self, key: &[u8], value: &[u8], key_hash: KeyHash) -> Result<(), String> {
+    fn insert_hashed(&mut self, value: &[u8], key_hash: &KeyHash) -> Result<(), String> {
         match self.current_root {
             TrieRoot::Empty => {
-                let node = self.modified_leaves.push(
-                    key_hash,
-                    Leaf {
-                        key: key.to_vec(),
-                        value: value.to_vec(),
-                    },
-                );
+                let node = self.modified_leaves.push(Leaf {
+                    key_hash: *key_hash,
+                    value: value.to_vec(),
+                });
                 self.current_root = TrieRoot::Node(NodeRef::ModLeaf(node));
                 Ok(())
             }
             TrieRoot::Node(NodeRef::ModBranch(branch_idx)) => {
-                self.insert_modified_branch(branch_idx, key, value, key_hash)
+                self.insert_modified_branch(branch_idx, key_hash, value)
             }
             TrieRoot::Node(NodeRef::ModLeaf(old_leaf_idx)) => {
-                self.insert_modified_leaf(old_leaf_idx, key, value, key_hash)
+                self.insert_modified_leaf(old_leaf_idx, key_hash, value)
             }
             TrieRoot::Node(NodeRef::StoredBranch(branch_ref)) => {
                 self.current_root =
-                    TrieRoot::Node(self.insert_stored_branch(branch_ref, key, value, &key_hash)?);
+                    TrieRoot::Node(self.insert_stored_branch(branch_ref, key_hash, value)?);
                 Ok(())
             }
             TrieRoot::Node(NodeRef::StoredLeaf(leaf_ref)) => {
                 self.current_root =
-                    TrieRoot::Node(self.insert_stored_leaf(leaf_ref, key, value, &key_hash)?);
+                    TrieRoot::Node(self.insert_stored_leaf(leaf_ref, key_hash, value)?);
                 Ok(())
             }
             TrieRoot::Node(NodeRef::StoredExtension(_)) => todo!(),
@@ -294,9 +266,8 @@ impl<S: Store> Transaction<S> {
     fn insert_modified_branch(
         &mut self,
         mut branch_idx: BranchIdx,
-        key: &[u8],
+        key_hash: &KeyHash,
         value: &[u8],
-        key_hash: KeyHash,
     ) -> Result<(), String> {
         // loop {
         //     let branch = &mut self.modified_branches[branch_idx];
@@ -324,9 +295,8 @@ impl<S: Store> Transaction<S> {
     fn insert_modified_leaf(
         &mut self,
         leaf_idx: LeafIdx,
-        key: &[u8],
+        key_hash: &KeyHash,
         value: &[u8],
-        key_hash: KeyHash,
     ) -> Result<(), String> {
         todo!();
     }
@@ -334,14 +304,14 @@ impl<S: Store> Transaction<S> {
     fn insert_stored_branch(
         &mut self,
         mut branch_ref: S::BranchRef,
-        key: &[u8],
-        value: &[u8],
         key_hash: &KeyHash,
+        value: &[u8],
     ) -> Result<NodeRefTxn<S>, String> {
         loop {
             let Branch {
                 bit_idx,
-                prefix_bits,
+                left_bits,
+                right_bits,
                 left,
                 right,
             } = *self.data_store.get_branch(branch_ref)?;
@@ -358,7 +328,7 @@ impl<S: Store> Transaction<S> {
                         )))
                     }
                     stored::Node::Extension(_) => todo!(),
-                    stored::Node::Leaf(lr) => self.insert_stored_leaf(lr, key, value, key_hash),
+                    stored::Node::Leaf(lr) => self.insert_stored_leaf(lr, key_hash, value),
                 }
             };
 
@@ -370,8 +340,9 @@ impl<S: Store> Transaction<S> {
 
             // the current branch contains a reference to the next branch or leaf
             self.modified_branches.push(Branch {
-                prefix_bits,
                 bit_idx,
+                left_bits,
+                right_bits,
                 left,
                 right,
             });
@@ -381,21 +352,17 @@ impl<S: Store> Transaction<S> {
     fn insert_stored_leaf(
         &mut self,
         leaf_ref: S::LeafRef,
-        key: &[u8],
-        value: &[u8],
         key_hash: &KeyHash,
+        value: &[u8],
     ) -> Result<NodeRefTxn<S>, String> {
         let leaf = self.data_store.get_leaf(leaf_ref)?;
 
-        let leaf_idx = self.modified_leaves.push(
-            *key_hash,
-            Leaf {
-                key: key.to_vec(),
-                value: value.to_vec(),
-            },
-        );
+        let leaf_idx = self.modified_leaves.push(Leaf {
+            key_hash: *key_hash,
+            value: value.to_vec(),
+        });
 
-        if leaf.key == key {
+        if leaf.key_hash == *key_hash {
             Ok(NodeRef::ModLeaf(leaf_idx))
         } else {
             // TODO Create extension
@@ -403,7 +370,7 @@ impl<S: Store> Transaction<S> {
                 0,
                 NodeRef::StoredLeaf(leaf_ref),
                 key_hash,
-                &hash_key(&leaf.key),
+                &leaf.key_hash,
                 NodeRef::ModLeaf(leaf_idx),
             );
             let new_branch_idx = self.modified_branches.push(branch);
