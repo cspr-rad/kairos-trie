@@ -17,17 +17,23 @@ pub use stored::{Ref, Store};
 use bitvec::prelude::*;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct KeyHash(pub [u8; 32]);
+pub struct KeyHash(pub [u32; 8]);
+
+#[inline(always)]
+fn bit_at(hash_segment: u32, rel_bit_idx: u32) -> bool {
+    (hash_segment >> rel_bit_idx) & 1 == 1
+}
 
 /// TODO: Switch to usize for more efficient bit indexing.
 type HashedKeyBits = BitSlice<u8, Lsb0>;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Branch<NR> {
-    // TODO we can make bit_idx a debug only field
-    bit_idx: u8,
-    left_bits: u8,
-    right_bits: u8,
+    // TODO we can make bit_idx a debug only field by counting leading zeros in l ^ r
+    // We may want to keep it because risc0 does not have a leading zeros instruction
+    rel_bit_idx: u32,
+    left_bits: u32,
+    right_bits: u32,
     pub left: NR,
     pub right: NR,
 }
@@ -49,7 +55,7 @@ impl<SBR, SER, SLR> Branch<NodeRef<SBR, SER, SLR>> {
                 let matched = a ^ b;
                 let rel_bit_idx = matched.leading_zeros();
 
-                let (left, right, left_bits, right_bits) = if (a >> rel_bit_idx) & 1 == 1 {
+                let (left, right, left_bits, right_bits) = if bit_at(a, rel_bit_idx) {
                     (b_leaf_idx, a_leaf_idx, b, a)
                 } else {
                     (a_leaf_idx, b_leaf_idx, a, b)
@@ -58,7 +64,7 @@ impl<SBR, SER, SLR> Branch<NodeRef<SBR, SER, SLR>> {
                 (
                     idx,
                     Branch {
-                        bit_idx: idx as u8 * 8 + rel_bit_idx as u8,
+                        rel_bit_idx,
                         left_bits,
                         right_bits,
                         left,
@@ -70,6 +76,16 @@ impl<SBR, SER, SLR> Branch<NodeRef<SBR, SER, SLR>> {
                 // TODO handle the case where the two hashes are equal
                 panic!("The two hashes are equal");
             })
+    }
+}
+
+impl<NR> Branch<NR> {
+    pub fn desend(&self, hash_segment: u32) -> &NR {
+        if bit_at(hash_segment, self.rel_bit_idx) {
+            &self.right
+        } else {
+            &self.left
+        }
     }
 }
 
@@ -152,9 +168,9 @@ impl<S: Store> Transaction<S> {
         key_hash: &KeyHash,
     ) -> Result<Option<&Leaf>, String> {
         let mut branch = &self.modified_branches[branch_idx];
+        let mut hash_segment = key_hash.0[branch.rel_bit_idx as usize];
         loop {
-            let bits = HashedKeyBits::from_slice(key_hash.0.as_ref());
-            let next = if bits[branch.bit_idx as usize] {
+            let next = if bit_at(hash_segment, branch.rel_bit_idx) {
                 branch.right
             } else {
                 branch.left
@@ -191,20 +207,9 @@ impl<S: Store> Transaction<S> {
         key_hash: &KeyHash,
     ) -> Result<Option<&Leaf>, String> {
         loop {
-            let Branch {
-                bit_idx,
-                left_bits,
-                right_bits,
-                left,
-                right,
-            } = self.data_store.get_branch(branch_ref)?;
+            let branch = self.data_store.get_branch(branch_ref)?;
 
-            let bit_slice = HashedKeyBits::from_slice(key_hash.0.as_ref());
-            let node_ref = if bit_slice[*bit_idx as usize] {
-                right
-            } else {
-                left
-            };
+            let node_ref = branch.desend(key_hash.0[branch.rel_bit_idx as usize]);
 
             match node_ref {
                 stored::Node::Branch(br) => {
@@ -309,14 +314,12 @@ impl<S: Store> Transaction<S> {
     ) -> Result<NodeRefTxn<S>, String> {
         loop {
             let Branch {
-                bit_idx,
+                rel_bit_idx,
                 left_bits,
                 right_bits,
                 left,
                 right,
             } = *self.data_store.get_branch(branch_ref)?;
-
-            let bit_slice = HashedKeyBits::from_slice(&key_hash.0);
 
             let mut next_mod_ref = |next_node| {
                 match next_node {
@@ -332,7 +335,7 @@ impl<S: Store> Transaction<S> {
                 }
             };
 
-            let (left, right) = if bit_slice[bit_idx as usize] {
+            let (left, right) = if bit_at(key_hash.0[rel_bit_idx as usize], rel_bit_idx) {
                 (left.into(), next_mod_ref(right)?)
             } else {
                 (next_mod_ref(left)?, right.into())
@@ -340,7 +343,7 @@ impl<S: Store> Transaction<S> {
 
             // the current branch contains a reference to the next branch or leaf
             self.modified_branches.push(Branch {
-                bit_idx,
+                rel_bit_idx,
                 left_bits,
                 right_bits,
                 left,
