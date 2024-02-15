@@ -1,30 +1,30 @@
+pub mod merkle;
+
 use std::hash::Hash;
 
 use alloc::{collections::BTreeMap, fmt::Debug, string::String};
 
 use crate::{Branch, Extension, Leaf};
 
-#[allow(clippy::type_complexity)]
-pub type NodeRef<S> =
-    Node<<S as Store>::BranchRef, <S as Store>::ExtensionRef, <S as Store>::LeafRef>;
-
-pub trait Store {
+pub trait Store<V> {
     /// The hash of a node or leaf.
     /// Alternatively, this could be a reference or an index that uniquely identifies a node or leaf
-    type BranchRef: Ref;
-    type ExtensionRef: Ref;
-    type LeafRef: Ref;
+    type BranchRef: Copy + Clone + Eq + Ord + Hash + Debug;
+    type ExtensionRef: Copy + Clone + Eq + Ord + Hash + Debug;
+    type LeafRef: Copy + Clone + Eq + Ord + Hash + Debug;
     type Error: Into<String>;
 
     fn get_branch(
         &self,
         hash: Self::BranchRef,
-    ) -> Result<&Branch<Node<Self::BranchRef, Self::ExtensionRef, Self::LeafRef>>, Error>;
+    ) -> Result<&Branch<Node<Self::BranchRef, Self::ExtensionRef, Self::LeafRef>>, Self::Error>;
     fn get_extension(
         &self,
         hash: Self::ExtensionRef,
-    ) -> Result<&Extension<Self::BranchRef, Self::ExtensionRef, Self::LeafRef>, Error>;
-    fn get_leaf(&self, hash: Self::LeafRef) -> Result<&Leaf, Error>;
+    ) -> Result<&Extension<Self::BranchRef, Self::ExtensionRef, Self::LeafRef, V>, Self::Error>;
+
+    fn get_leaf(&self, hash: Self::LeafRef) -> Result<&Leaf<V>, Self::Error>;
+    fn get_leaf_hash(&self, leaf: &Self::LeafRef) -> Result<&LeafHash, Self::Error>;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -33,8 +33,6 @@ pub enum Node<B, E, L> {
     Extension(E),
     Leaf(L),
 }
-
-pub trait Ref: Copy + Clone + Eq + Ord + Hash + Debug {}
 
 pub enum Error {
     NodeNotFound,
@@ -50,25 +48,22 @@ impl From<Error> for String {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct BranchHash(pub [u8; 32]);
-impl Ref for BranchHash {}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct ExtensionHash(pub [u8; 32]);
-impl Ref for ExtensionHash {}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct LeafHash(pub [u8; 32]);
-impl Ref for LeafHash {}
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct MemoryStore {
+pub struct MemoryStore<V> {
     // TODO: use a indexmap
     branches: BTreeMap<BranchHash, Branch<Node<BranchHash, ExtensionHash, LeafHash>>>,
-    extensions: BTreeMap<ExtensionHash, Extension<BranchHash, ExtensionHash, LeafHash>>,
-    leaves: BTreeMap<LeafHash, Leaf>,
+    extensions: BTreeMap<ExtensionHash, Extension<BranchHash, ExtensionHash, LeafHash, V>>,
+    leaves: BTreeMap<LeafHash, Leaf<V>>,
 }
 
-impl Store for MemoryStore {
+impl<V> Store<V> for MemoryStore<V> {
     type BranchRef = BranchHash;
     type ExtensionRef = ExtensionHash;
     type LeafRef = LeafHash;
@@ -77,18 +72,25 @@ impl Store for MemoryStore {
     fn get_branch(
         &self,
         hash: Self::BranchRef,
-    ) -> Result<&Branch<Node<Self::BranchRef, Self::ExtensionRef, Self::LeafRef>>, Error> {
+    ) -> Result<&Branch<Node<Self::BranchRef, Self::ExtensionRef, Self::LeafRef>>, Self::Error>
+    {
         self.branches.get(&hash).ok_or(Error::NodeNotFound)
     }
 
     fn get_extension(
         &self,
         hash: Self::ExtensionRef,
-    ) -> Result<&Extension<Self::BranchRef, Self::ExtensionRef, Self::LeafRef>, Error> {
+    ) -> Result<&Extension<Self::BranchRef, Self::ExtensionRef, Self::LeafRef, V>, Self::Error>
+    {
         self.extensions.get(&hash).ok_or(Error::NodeNotFound)
     }
 
-    fn get_leaf(&self, hash: Self::LeafRef) -> Result<&Leaf, Error> {
+    fn get_leaf(&self, hash: Self::LeafRef) -> Result<&Leaf<V>, Self::Error> {
         self.leaves.get(&hash).ok_or(Error::NodeNotFound)
+    }
+
+    #[inline(always)]
+    fn get_leaf_hash(&self, leaf: &Self::LeafRef) -> Result<&LeafHash, Self::Error> {
+        Ok(leaf)
     }
 }

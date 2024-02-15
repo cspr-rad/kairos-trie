@@ -8,7 +8,6 @@ edition = "2021"
 std = []
 
 [dependencies]
-bitvec = "1"
 sha2 = "0.10"
 
 [dev-dependencies]

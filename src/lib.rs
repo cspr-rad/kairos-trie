@@ -12,9 +12,7 @@ use std::iter;
 
 use alloc::{boxed::Box, string::String, vec::Vec};
 pub use modified::*;
-pub use stored::{Ref, Store};
-
-use bitvec::prelude::*;
+pub use stored::Store;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct KeyHash(pub [u32; 8]);
@@ -23,9 +21,6 @@ pub struct KeyHash(pub [u32; 8]);
 fn bit_at(hash_segment: u32, rel_bit_idx: u32) -> bool {
     (hash_segment >> rel_bit_idx) & 1 == 1
 }
-
-/// TODO: Switch to usize for more efficient bit indexing.
-type HashedKeyBits = BitSlice<u8, Lsb0>;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Branch<NR> {
@@ -38,15 +33,15 @@ pub struct Branch<NR> {
     pub right: NR,
 }
 
-impl<SBR, SER, SLR> Branch<NodeRef<SBR, SER, SLR>> {
+impl<B, E, L, V> Branch<NodeRef<B, E, L, V>> {
     /// Create a new branch.
     /// Returns the byte index of the branch for creating an extension node.
     pub fn from_hashed_key_bits(
         _prior_bit_idx: u8,
-        a_leaf_idx: NodeRef<SBR, SER, SLR>,
+        a_leaf_idx: NodeRef<B, E, L, V>,
         a_hash: &KeyHash,
         b_hash: &KeyHash,
-        b_leaf_idx: NodeRef<SBR, SER, SLR>,
+        b_leaf_idx: NodeRef<B, E, L, V>,
     ) -> (usize, Self) {
         iter::zip(a_hash.0, b_hash.0)
             .enumerate()
@@ -80,305 +75,278 @@ impl<SBR, SER, SLR> Branch<NodeRef<SBR, SER, SLR>> {
 }
 
 impl<NR> Branch<NR> {
-    pub fn desend(&self, hash_segment: u32) -> &NR {
+    pub fn desend<T>(&self, hash_segment: u32, left: T, right: T) -> T {
         if bit_at(hash_segment, self.rel_bit_idx) {
-            &self.right
+            left
         } else {
-            &self.left
+            right
         }
     }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Extension<SBR, SER, SLR> {
-    next: NodeRef<SBR, SER, SLR>,
+pub struct Extension<B, E, L, V> {
+    next: NodeRef<B, E, L, V>,
     bits: Box<[u8]>,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Leaf {
+pub struct Leaf<V> {
     pub key_hash: KeyHash,
-    pub value: Vec<u8>,
+    pub value: V,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
-pub enum TrieRoot<SBR, SER, SLR> {
+pub enum TrieRoot<B, E, L, V> {
     #[default]
     Empty,
-    Node(NodeRef<SBR, SER, SLR>),
+    Node(NodeRef<B, E, L, V>),
 }
 
-pub struct Transaction<S: Store> {
-    pub data_store: S,
-
-    // TODO: break witness into a separate struct
-    pub witness_branches: Vec<(S::BranchRef, Branch<stored::NodeRef<S>>)>,
-    pub witness_leaves: Vec<(KeyHash, Leaf)>,
-
-    pub current_root: TrieRoot<S::BranchRef, S::ExtensionRef, S::LeafRef>,
-    pub modified_branches: Branches<S::BranchRef, S::ExtensionRef, S::LeafRef>,
-    pub modified_extensions: Vec<Box<Extension<S::BranchRef, S::ExtensionRef, S::LeafRef>>>,
-    pub modified_leaves: Leaves,
+pub struct Transaction<'s, S: Store<V>, V> {
+    data_store: &'s S,
+    pub current_root: TrieRoot<S::BranchRef, S::ExtensionRef, S::LeafRef, V>,
 }
 
-type NodeRefTxn<S> =
-    NodeRef<<S as Store>::BranchRef, <S as Store>::ExtensionRef, <S as Store>::LeafRef>;
-
-impl<S: Store> Transaction<S> {
-    pub fn new(root: TrieRoot<S::BranchRef, S::ExtensionRef, S::LeafRef>, data_store: S) -> Self {
+impl<'s, S: Store<V>, V> Transaction<'s, S, V> {
+    pub fn new(
+        root: TrieRoot<S::BranchRef, S::ExtensionRef, S::LeafRef, V>,
+        data_store: &'s S,
+    ) -> Self {
         Transaction {
-            data_store,
-            witness_branches: Vec::new(),
-            witness_leaves: Vec::new(),
             current_root: root,
-            modified_branches: Branches::default(),
-            modified_extensions: Vec::new(),
-            modified_leaves: Leaves::default(),
+            data_store,
         }
     }
 
-    fn get_hashed(&mut self, key_hash: &KeyHash) -> Result<Option<&Leaf>, String> {
-        match self.current_root {
-            TrieRoot::Empty => Ok(None),
-            TrieRoot::Node(NodeRef::ModLeaf(leaf_idx)) => {
-                let leaf = &self.modified_leaves[leaf_idx];
-                if leaf.key_hash == *key_hash {
-                    Ok(Some(leaf))
-                } else {
-                    Ok(None)
-                }
-            }
-            TrieRoot::Node(NodeRef::ModBranch(branch_idx)) => {
-                self.get_modified(branch_idx, key_hash)
-            }
-            TrieRoot::Node(NodeRef::StoredBranch(br)) => {
-                return self.get_stored_branch(br, key_hash);
-            }
-            TrieRoot::Node(NodeRef::StoredLeaf(lr)) => {
-                return self.get_stored_leaf(lr, key_hash);
-            }
-            TrieRoot::Node(NodeRef::StoredExtension(_)) => todo!(),
-            TrieRoot::Node(NodeRef::ModExtension(_)) => todo!(),
-        }
-    }
-
-    fn get_modified(
-        &self,
-        branch_idx: BranchIdx,
+    pub fn get<'a>(
         key_hash: &KeyHash,
-    ) -> Result<Option<&Leaf>, String> {
-        let mut branch = &self.modified_branches[branch_idx];
-        let mut hash_segment = key_hash.0[branch.rel_bit_idx as usize];
-        loop {
-            let next = if bit_at(hash_segment, branch.rel_bit_idx) {
-                branch.right
-            } else {
-                branch.left
-            };
-
-            match next {
-                NodeRef::ModBranch(branch_idx) => {
-                    branch = &self.modified_branches[branch_idx];
-                }
-                NodeRef::ModExtension(_) => todo!(),
-
-                NodeRef::ModLeaf(leaf_idx) => {
-                    let leaf = &self.modified_leaves[leaf_idx];
-                    if leaf.key_hash == *key_hash {
-                        return Ok(Some(leaf));
-                    } else {
-                        return Ok(None);
-                    }
-                }
-                NodeRef::StoredBranch(br) => {
-                    return self.get_stored_branch(br, key_hash);
-                }
-                NodeRef::StoredLeaf(lr) => {
-                    return self.get_stored_leaf(lr, key_hash);
-                }
-                NodeRef::StoredExtension(_) => todo!(),
-            };
-        }
-    }
-
-    pub fn get_stored_branch(
-        &self,
-        mut branch_ref: S::BranchRef,
-        key_hash: &KeyHash,
-    ) -> Result<Option<&Leaf>, String> {
-        loop {
-            let branch = self.data_store.get_branch(branch_ref)?;
-
-            let node_ref = branch.desend(key_hash.0[branch.rel_bit_idx as usize]);
-
-            match node_ref {
-                stored::Node::Branch(br) => {
-                    branch_ref = *br;
-                }
-                stored::Node::Leaf(lr) => {
-                    return self.get_stored_leaf(*lr, key_hash);
-                }
-                stored::Node::Extension(_) => todo!(),
-            }
-        }
-    }
-
-    pub fn get_stored_leaf(
-        &self,
-        leaf: S::LeafRef,
-
-        key_hash: &KeyHash,
-    ) -> Result<Option<&Leaf>, String> {
-        let leaf = self.data_store.get_leaf(leaf)?;
-        if leaf.key_hash == *key_hash {
-            Ok(Some(leaf))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn insert_hashed(&mut self, value: &[u8], key_hash: &KeyHash) -> Result<(), String> {
-        match self.current_root {
-            TrieRoot::Empty => {
-                let node = self.modified_leaves.push(Leaf {
-                    key_hash: *key_hash,
-                    value: value.to_vec(),
-                });
-                self.current_root = TrieRoot::Node(NodeRef::ModLeaf(node));
-                Ok(())
-            }
-            TrieRoot::Node(NodeRef::ModBranch(branch_idx)) => {
-                self.insert_modified_branch(branch_idx, key_hash, value)
-            }
-            TrieRoot::Node(NodeRef::ModLeaf(old_leaf_idx)) => {
-                self.insert_modified_leaf(old_leaf_idx, key_hash, value)
-            }
-            TrieRoot::Node(NodeRef::StoredBranch(branch_ref)) => {
-                self.current_root =
-                    TrieRoot::Node(self.insert_stored_branch(branch_ref, key_hash, value)?);
-                Ok(())
-            }
-            TrieRoot::Node(NodeRef::StoredLeaf(leaf_ref)) => {
-                self.current_root =
-                    TrieRoot::Node(self.insert_stored_leaf(leaf_ref, key_hash, value)?);
-                Ok(())
-            }
-            TrieRoot::Node(NodeRef::StoredExtension(_)) => todo!(),
-            TrieRoot::Node(NodeRef::ModExtension(_)) => todo!(),
-        }
-    }
-
-    fn insert_modified_branch(
-        &mut self,
-        mut branch_idx: BranchIdx,
-        key_hash: &KeyHash,
-        value: &[u8],
-    ) -> Result<(), String> {
-        // loop {
-        //     let branch = &mut self.modified_branches[branch_idx];
-
-        //     let bit_slice = HashedKeyBits::from_slice(&key_hash.0);
-
-        //     let next_mod_ref = |next_node| -> Result<NodeRefTxn<S>, String> {
-        //         match next_node {
-        //             NodeRef::ModBranch(br) => {
-        //                 branch_idx = br;
-        //                 Ok(NodeRef::ModBranch(br))
-        //             }
-        //             NodeRef::ModLeaf(lr)
-
-        // if bit_slice[branch.bit_idx as usize] {
-        //     branch_idx = branch.right;
-        // } else {
-        //     branch_idx = branch.left;
-        // }
-
-        // }
+        node: &'a NodeRef<S::BranchRef, S::ExtensionRef, S::LeafRef, V>,
+        data_store: &'s S,
+    ) -> Result<Option<&'a V>, String>
+    where
+        's: 'a,
+    {
         todo!();
     }
 
-    fn insert_modified_leaf(
-        &mut self,
-        leaf_idx: LeafIdx,
-        key_hash: &KeyHash,
-        value: &[u8],
-    ) -> Result<(), String> {
-        todo!();
-    }
+    // pub fn get_node(&self, key_hash: &KeyHash) -> Result<Option<NodeRef<B, E, L, V>>, String> {}
 
-    fn insert_stored_branch(
-        &mut self,
-        mut branch_ref: S::BranchRef,
-        key_hash: &KeyHash,
-        value: &[u8],
-    ) -> Result<NodeRefTxn<S>, String> {
-        loop {
-            let Branch {
-                rel_bit_idx,
-                left_bits,
-                right_bits,
-                left,
-                right,
-            } = *self.data_store.get_branch(branch_ref)?;
+    // fn get_modified_branch(
+    //     &self,
+    //     mut branch: &Branch<NodeRef<B, E, L, V>>,
+    //     key_hash: &KeyHash,
+    //     hash_idx: u32,
+    // ) -> Result<Option<&Leaf<V>>, String> {
+    //     let mut hash_segment = key_hash.0[hash_idx as usize];
+    //     loop {
+    //         let next = if bit_at(hash_segment, branch.rel_bit_idx) {
+    //             &branch.right
+    //         } else {
+    //             &branch.left
+    //         };
 
-            let mut next_mod_ref = |next_node| {
-                match next_node {
-                    stored::Node::Branch(br) => {
-                        branch_ref = br;
-                        Ok(NodeRef::ModBranch(BranchIdx(
-                            // refers to the branch that will be inserted in the next iteration
-                            self.modified_branches.0.len() as u32 + 1,
-                        )))
-                    }
-                    stored::Node::Extension(_) => todo!(),
-                    stored::Node::Leaf(lr) => self.insert_stored_leaf(lr, key_hash, value),
-                }
-            };
+    //         match next {
+    //             NodeRef::ModBranch(next_branch) => branch = next_branch,
+    //             NodeRef::ModExtension(_) => {
+    //                 // let iter::zip(bits.iter(), key_hash.0.iter().skip(hash_seg_idx as usize)) .find(|(a, b)| a != b);
+    //                 todo!();
+    //             }
 
-            let (left, right) = if bit_at(key_hash.0[rel_bit_idx as usize], rel_bit_idx) {
-                (left.into(), next_mod_ref(right)?)
-            } else {
-                (next_mod_ref(left)?, right.into())
-            };
+    //             NodeRef::ModLeaf(leaf) => {
+    //                 if leaf.key_hash == *key_hash {
+    //                     return Ok(Some(leaf.as_ref()));
+    //                 } else {
+    //                     return Ok(None);
+    //                 }
+    //             }
+    //             NodeRef::StoredBranch(br) => {
+    //                 return self.get_stored_branch(*br, key_hash);
+    //             }
+    //             NodeRef::StoredLeaf(lr) => {
+    //                 return self.get_stored_leaf(*lr, key_hash);
+    //             }
+    //             NodeRef::StoredExtension(_) => todo!(),
+    //         };
+    //     }
+    // }
 
-            // the current branch contains a reference to the next branch or leaf
-            self.modified_branches.push(Branch {
-                rel_bit_idx,
-                left_bits,
-                right_bits,
-                left,
-                right,
-            });
-        }
-    }
+    // pub fn get_stored_branch(
+    //     &self,
+    //     mut branch_ref: B,
+    //     key_hash: &KeyHash,
+    // ) -> Result<Option<&Leaf<V>>, String> {
+    //     loop {
+    //         let branch = self.data_store.get_branch(branch_ref)?;
 
-    fn insert_stored_leaf(
-        &mut self,
-        leaf_ref: S::LeafRef,
-        key_hash: &KeyHash,
-        value: &[u8],
-    ) -> Result<NodeRefTxn<S>, String> {
-        let leaf = self.data_store.get_leaf(leaf_ref)?;
+    //         let node_ref = branch.desend(
+    //             key_hash.0[branch.rel_bit_idx as usize],
+    //             branch.left,
+    //             branch.right,
+    //         );
 
-        let leaf_idx = self.modified_leaves.push(Leaf {
-            key_hash: *key_hash,
-            value: value.to_vec(),
-        });
+    //         match node_ref {
+    //             stored::Node::Branch(br) => {
+    //                 branch_ref = br;
+    //             }
+    //             stored::Node::Leaf(lr) => {
+    //                 return self.get_stored_leaf(lr, key_hash);
+    //             }
+    //             stored::Node::Extension(_) => todo!(),
+    //         }
+    //     }
+    // }
 
-        if leaf.key_hash == *key_hash {
-            Ok(NodeRef::ModLeaf(leaf_idx))
-        } else {
-            // TODO Create extension
-            let (idx, branch) = Branch::from_hashed_key_bits(
-                0,
-                NodeRef::StoredLeaf(leaf_ref),
-                key_hash,
-                &leaf.key_hash,
-                NodeRef::ModLeaf(leaf_idx),
-            );
-            let new_branch_idx = self.modified_branches.push(branch);
+    // pub fn get_stored_leaf(&self, leaf: L, key_hash: &KeyHash) -> Result<Option<&Leaf<V>>, String> {
+    //     let leaf = self.data_store.get_leaf(leaf)?;
+    //     if leaf.key_hash == *key_hash {
+    //         Ok(Some(leaf))
+    //     } else {
+    //         Ok(None)
+    //     }
+    // }
 
-            Ok(NodeRef::ModBranch(new_branch_idx))
-        }
-    }
+    // fn insert_hashed(&mut self, value: &[u8], key_hash: &KeyHash) -> Result<(), String> {
+    //     match &mut self.current_root {
+    //         TrieRoot::Empty => {
+    //             self.current_root = TrieRoot::Node(NodeRef::ModLeaf(Box::new(Leaf {
+    //                 key_hash: *key_hash,
+    //                 value: value.to_vec(),
+    //             })));
+    //             Ok(())
+    //         }
+    //         TrieRoot::Node(NodeRef::ModBranch(branch_idx)) => {
+    //             self.insert_modified_branch(branch_idx, key_hash, value)
+    //         }
+    //         TrieRoot::Node(NodeRef::ModLeaf(old_leaf_idx)) => {
+    //             self.insert_modified_leaf(old_leaf_idx, key_hash, value)
+    //         }
+    //         TrieRoot::Node(NodeRef::StoredBranch(branch_ref)) => {
+    //             self.current_root =
+    //                 TrieRoot::Node(self.insert_stored_branch(branch_ref, key_hash, value)?);
+    //             Ok(())
+    //         }
+    //         TrieRoot::Node(NodeRef::StoredLeaf(leaf_ref)) => {
+    //             self.current_root =
+    //                 TrieRoot::Node(self.insert_stored_leaf(leaf_ref, key_hash, value)?);
+    //             Ok(())
+    //         }
+    //         TrieRoot::Node(NodeRef::StoredExtension(_)) => todo!(),
+    //         TrieRoot::Node(NodeRef::ModExtension(_)) => todo!(),
+    //     }
+    // }
+
+    // fn insert_modified_branch(
+    //     &mut self,
+    //     mut branch_idx: &mut Branch<NodeRef<B, E, L, V>>,
+    //     key_hash: &KeyHash,
+    //     value: &[u8],
+    // ) -> Result<(), String> {
+    // loop {
+    //     let branch = &mut self.modified_branches[branch_idx];
+
+    //     let bit_slice = HashedKeyBits::from_slice(&key_hash.0);
+
+    //     let next_mod_ref = |next_node| -> Result<NodeRefTxn<S>, String> {
+    //         match next_node {
+    //             NodeRef::ModBranch(br) => {
+    //                 branch_idx = br;
+    //                 Ok(NodeRef::ModBranch(br))
+    //             }
+    //             NodeRef::ModLeaf(lr)
+
+    // if bit_slice[branch.bit_idx as usize] {
+    //     branch_idx = branch.right;
+    // } else {
+    //     branch_idx = branch.left;
+    // }
+
+    // }
+    //     todo!();
+    // }
+
+    // fn insert_modified_leaf(
+    //     &mut self,
+    //     leaf_idx: LeafIdx,
+    //     key_hash: &KeyHash,
+    //     value: &[u8],
+    // ) -> Result<(), String> {
+    //     todo!();
+    // }
+
+    // fn insert_stored_branch(
+    //     &mut self,
+    //     mut branch_ref: S::BranchRef,
+    //     key_hash: &KeyHash,
+    //     value: &[u8],
+    // ) -> Result<NodeRefTxn<S>, String> {
+    //     loop {
+    //         let Branch {
+    //             rel_bit_idx,
+    //             left_bits,
+    //             right_bits,
+    //             left,
+    //             right,
+    //         } = *self.data_store.get_branch(branch_ref)?;
+
+    //         let mut next_mod_ref = |next_node| {
+    //             match next_node {
+    //                 stored::Node::Branch(br) => {
+    //                     branch_ref = br;
+    //                     Ok(NodeRef::ModBranch(BranchIdx(
+    //                         // refers to the branch that will be inserted in the next iteration
+    //                         self.modified_branches.0.len() as u32 + 1,
+    //                     )))
+    //                 }
+    //                 stored::Node::Extension(_) => todo!(),
+    //                 stored::Node::Leaf(lr) => self.insert_stored_leaf(lr, key_hash, value),
+    //             }
+    //         };
+
+    //         let (left, right) = if bit_at(key_hash.0[rel_bit_idx as usize], rel_bit_idx) {
+    //             (left.into(), next_mod_ref(right)?)
+    //         } else {
+    //             (next_mod_ref(left)?, right.into())
+    //         };
+
+    //         // the current branch contains a reference to the next branch or leaf
+    //         self.modified_branches.push(Branch {
+    //             rel_bit_idx,
+    //             left_bits,
+    //             right_bits,
+    //             left,
+    //             right,
+    //         });
+    //     }
+    // }
+
+    // fn insert_stored_leaf(
+    //     &mut self,
+    //     leaf_ref: S::LeafRef,
+    //     key_hash: &KeyHash,
+    //     value: &[u8],
+    // ) -> Result<NodeRefTxn<S>, String> {
+    //     let leaf = self.data_store.get_leaf(leaf_ref)?;
+
+    //     let leaf_idx = self.modified_leaves.push(Leaf {
+    //         key_hash: *key_hash,
+    //         value: value.to_vec(),
+    //     });
+
+    //     if leaf.key_hash == *key_hash {
+    //         Ok(NodeRef::ModLeaf(leaf_idx))
+    //     } else {
+    //         // TODO Create extension
+    //         let (idx, branch) = Branch::from_hashed_key_bits(
+    //             0,
+    //             NodeRef::StoredLeaf(leaf_ref),
+    //             key_hash,
+    //             &leaf.key_hash,
+    //             NodeRef::ModLeaf(leaf_idx),
+    //         );
+    //         let new_branch_idx = self.modified_branches.push(branch);
+
+    //         Ok(NodeRef::ModBranch(new_branch_idx))
+    //     }
+    // }
 }
