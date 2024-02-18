@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 
 use crate::{Branch, Extension, Leaf, Store};
 
-use super::{BranchHash, ExtensionHash, LeafHash, Node};
+use super::{BranchHash, Error, ExtensionHash, LeafHash, Node};
 
 pub struct Snapshot<V> {
     branches: Branches<BranchIdx, ExtensionIdx, LeafIdx>,
@@ -16,6 +16,39 @@ pub struct Snapshot<V> {
     branch_hashes: Vec<BranchHash>,
     extension_hashes: Vec<ExtensionHash>,
     leaf_hashes: Vec<LeafHash>,
+}
+
+impl<V> Store<V> for Snapshot<V> {
+    type BranchRef = BranchIdx;
+    type ExtensionRef = ExtensionIdx;
+    type LeafRef = LeafIdx;
+    type Error = Error;
+
+    fn get_branch(
+        &self,
+        idx: Self::BranchRef,
+    ) -> Result<&Branch<Node<Self::BranchRef, Self::ExtensionRef, Self::LeafRef>>, Self::Error>
+    {
+        self.branches
+            .0
+            .get(idx.0 as usize)
+            .ok_or(Error::NodeNotFound)
+    }
+
+    fn get_extension(
+        &self,
+        idx: Self::ExtensionRef,
+    ) -> Result<&Extension<Self::BranchRef, Self::ExtensionRef, Self::LeafRef, V>, Self::Error>
+    {
+        self.extension
+            .0
+            .get(idx.0 as usize)
+            .ok_or(Error::NodeNotFound)
+    }
+
+    fn get_leaf(&self, idx: Self::LeafRef) -> Result<&Leaf<V>, Self::Error> {
+        self.leaves.0.get(idx.0 as usize).ok_or(Error::NodeNotFound)
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]

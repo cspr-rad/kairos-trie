@@ -6,6 +6,12 @@ use alloc::{collections::BTreeMap, fmt::Debug, string::String};
 
 use crate::{Branch, Extension, Leaf};
 
+pub trait MerkleStore<V>: Store<V> {
+    fn get_branch_hash(&self, hash: Self::BranchRef) -> &BranchHash;
+    fn get_extension_hash(&self, hash: Self::ExtensionRef) -> &ExtensionHash;
+    fn get_leaf_hash(&self, hash: Self::LeafRef) -> &LeafHash;
+}
+
 pub trait Store<V> {
     /// The hash of a node or leaf.
     /// Alternatively, this could be a reference or an index that uniquely identifies a node or leaf
@@ -24,7 +30,6 @@ pub trait Store<V> {
     ) -> Result<&Extension<Self::BranchRef, Self::ExtensionRef, Self::LeafRef, V>, Self::Error>;
 
     fn get_leaf(&self, hash: Self::LeafRef) -> Result<&Leaf<V>, Self::Error>;
-    fn get_leaf_hash(&self, leaf: &Self::LeafRef) -> Result<&LeafHash, Self::Error>;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -87,10 +92,5 @@ impl<V> Store<V> for MemoryStore<V> {
 
     fn get_leaf(&self, hash: Self::LeafRef) -> Result<&Leaf<V>, Self::Error> {
         self.leaves.get(&hash).ok_or(Error::NodeNotFound)
-    }
-
-    #[inline(always)]
-    fn get_leaf_hash(&self, leaf: &Self::LeafRef) -> Result<&LeafHash, Self::Error> {
-        Ok(leaf)
     }
 }
