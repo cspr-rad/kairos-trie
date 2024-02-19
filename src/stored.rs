@@ -6,28 +6,28 @@ use alloc::{collections::BTreeMap, fmt::Debug, string::String};
 
 use crate::{Branch, Extension, Leaf};
 
-pub trait PartialStore<V>: Store<V> {
-    fn get_unvisted_hash(&self, hash_ref: &Self::HashRef) -> Result<&NodeHash, Self::Error>;
-}
+pub type Idx = u32;
 
 pub trait Store<V> {
-    /// The hash of a node or leaf.
-    /// Alternatively, this could be a reference or an index that uniquely identifies a node or leaf
-    ///
-    /// TODO consider using a single u32 as the Idx type.
-    type HashRef: Copy + Clone + Eq + Ord + Hash + Debug;
     type Error: Into<String>;
 
-    fn get_branch(
-        &self,
-        hash_ref: &Self::HashRef,
-    ) -> Result<&Branch<Node<Self::HashRef, Self::HashRef, Self::HashRef>>, Self::Error>;
-    fn get_extension(
-        &self,
-        hash_ref: &Self::HashRef,
-    ) -> Result<&Extension<Self::HashRef, Self::HashRef, Self::HashRef, V>, Self::Error>;
+    /// Must return a hash of a node that has not been visited.
+    /// May return a hash of a node that has already been visited.
+    fn get_unvisted_hash(&self, hash: Idx) -> Result<&NodeHash, Self::Error>;
 
-    fn get_leaf(&self, hash_ref: &Self::HashRef) -> Result<&Leaf<V>, Self::Error>;
+    fn get_node(
+        &mut self,
+        hash: Idx,
+    ) -> Result<Node<&Branch<Idx>, &Extension<V>, &Leaf<V>>, Self::Error>;
+}
+
+pub trait Db<V> {
+    type Error: Into<String>;
+
+    fn get(
+        &self,
+        hash: &NodeHash,
+    ) -> Result<Node<Branch<NodeHash>, Extension<V>, NodeHash>, Self::Error>;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -52,32 +52,17 @@ impl From<Error> for String {
 pub type NodeHash = [u8; 32];
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct MemoryStore<V> {
-    // TODO: use a indexmap
-    branches: BTreeMap<NodeHash, Branch<Node<NodeHash, NodeHash, NodeHash>>>,
-    extensions: BTreeMap<NodeHash, Extension<NodeHash, NodeHash, NodeHash, V>>,
-    leaves: BTreeMap<NodeHash, Leaf<V>>,
+pub struct MemoryDb<V> {
+    leaves: BTreeMap<NodeHash, Node<Branch<NodeHash>, Extension<V>, NodeHash>>,
 }
 
-impl<V> Store<V> for MemoryStore<V> {
-    type HashRef = NodeHash;
+impl<V: Clone> Db<V> for MemoryDb<V> {
     type Error = Error;
 
-    fn get_branch(
+    fn get(
         &self,
-        hash_ref: &Self::HashRef,
-    ) -> Result<&Branch<Node<Self::HashRef, Self::HashRef, Self::HashRef>>, Self::Error> {
-        self.branches.get(hash_ref).ok_or(Error::NodeNotFound)
-    }
-
-    fn get_extension(
-        &self,
-        idx: &Self::HashRef,
-    ) -> Result<&Extension<Self::HashRef, Self::HashRef, Self::HashRef, V>, Self::Error> {
-        self.extensions.get(idx).ok_or(Error::NodeNotFound)
-    }
-
-    fn get_leaf(&self, idx: &Self::HashRef) -> Result<&Leaf<V>, Self::Error> {
-        self.leaves.get(idx).ok_or(Error::NodeNotFound)
+        hash: &NodeHash,
+    ) -> Result<Node<Branch<NodeHash>, Extension<V>, NodeHash>, Self::Error> {
+        self.leaves.get(hash).cloned().ok_or(Error::NodeNotFound)
     }
 }

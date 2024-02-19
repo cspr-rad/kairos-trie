@@ -33,15 +33,15 @@ pub struct Branch<NR> {
     pub right: NR,
 }
 
-impl<B, E, L, V> Branch<NodeRef<B, E, L, V>> {
+impl<V> Branch<NodeRef<V>> {
     /// Create a new branch.
     /// Returns the byte index of the branch for creating an extension node.
     pub fn from_hashed_key_bits(
         _prior_bit_idx: u8,
-        a_leaf_idx: NodeRef<B, E, L, V>,
+        a_leaf_idx: NodeRef<V>,
         a_hash: &KeyHash,
         b_hash: &KeyHash,
-        b_leaf_idx: NodeRef<B, E, L, V>,
+        b_leaf_idx: NodeRef<V>,
     ) -> (usize, Self) {
         iter::zip(a_hash.0, b_hash.0)
             .enumerate()
@@ -85,8 +85,8 @@ impl<NR> Branch<NR> {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Extension<B, E, L, V> {
-    next: NodeRef<B, E, L, V>,
+pub struct Extension<V> {
+    next: NodeRef<V>,
     bits: Box<[u8]>,
 }
 
@@ -97,22 +97,19 @@ pub struct Leaf<V> {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
-pub enum TrieRoot<B, E, L, V> {
+pub enum TrieRoot<V> {
     #[default]
     Empty,
-    Node(NodeRef<B, E, L, V>),
+    Node(NodeRef<V>),
 }
 
 pub struct Transaction<'s, S: Store<V>, V> {
     data_store: &'s S,
-    pub current_root: TrieRoot<S::HashRef, S::HashRef, S::HashRef, V>,
+    pub current_root: TrieRoot<V>,
 }
 
 impl<'s, S: Store<V>, V> Transaction<'s, S, V> {
-    pub fn new(
-        root: TrieRoot<S::HashRef, S::HashRef, S::HashRef, V>,
-        data_store: &'s S,
-    ) -> Self {
+    pub fn new(root: TrieRoot<V>, data_store: &'s S) -> Self {
         Transaction {
             current_root: root,
             data_store,
@@ -121,7 +118,7 @@ impl<'s, S: Store<V>, V> Transaction<'s, S, V> {
 
     pub fn get<'a>(
         key_hash: &KeyHash,
-        node: &'a NodeRef<S::HashRef, S::HashRef, S::HashRef, V>,
+        node: &'a NodeRef<V>,
         data_store: &'s S,
     ) -> Result<Option<&'a V>, String>
     where
@@ -130,11 +127,11 @@ impl<'s, S: Store<V>, V> Transaction<'s, S, V> {
         todo!();
     }
 
-    // pub fn get_node(&self, key_hash: &KeyHash) -> Result<Option<NodeRef<B, E, L, V>>, String> {}
+    // pub fn get_node(&self, key_hash: &KeyHash) -> Result<Option<NodeRef<HR, V>>, String> {}
 
     // fn get_modified_branch(
     //     &self,
-    //     mut branch: &Branch<NodeRef<B, E, L, V>>,
+    //     mut branch: &Branch<NodeRef<HR, V>>,
     //     key_hash: &KeyHash,
     //     hash_idx: u32,
     // ) -> Result<Option<&Leaf<V>>, String> {
@@ -238,7 +235,7 @@ impl<'s, S: Store<V>, V> Transaction<'s, S, V> {
 
     // fn insert_modified_branch(
     //     &mut self,
-    //     mut branch_idx: &mut Branch<NodeRef<B, E, L, V>>,
+    //     mut branch_idx: &mut Branch<NodeRef<HR, V>>,
     //     key_hash: &KeyHash,
     //     value: &[u8],
     // ) -> Result<(), String> {
