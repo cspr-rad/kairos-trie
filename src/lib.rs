@@ -85,8 +85,8 @@ impl<NR> Branch<NR> {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Extension<V> {
-    next: NodeRef<V>,
+pub struct Extension<NR> {
+    next: NR,
     bits: Box<[u8]>,
 }
 

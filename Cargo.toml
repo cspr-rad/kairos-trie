@@ -9,6 +9,8 @@ std = []
 
 [dependencies]
 sha2 = "0.10"
+bumpalo = "3"
+ouroboros = "0.18"
 
 [dev-dependencies]
 proptest = "1"

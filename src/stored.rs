@@ -13,21 +13,21 @@ pub trait Store<V> {
 
     /// Must return a hash of a node that has not been visited.
     /// May return a hash of a node that has already been visited.
-    fn get_unvisted_hash(&self, hash: Idx) -> Result<&NodeHash, Self::Error>;
+    fn get_unvisted_hash(&self, hash_idx: Idx) -> Result<&NodeHash, Self::Error>;
 
     fn get_node(
         &mut self,
-        hash: Idx,
-    ) -> Result<Node<&Branch<Idx>, &Extension<V>, &Leaf<V>>, Self::Error>;
+        hash_idx: Idx,
+    ) -> Result<Node<&Branch<Idx>, &Extension<Idx>, &Leaf<V>>, Self::Error>;
 }
 
-pub trait Db<V> {
+pub trait Database<V> {
     type Error: Into<String>;
 
     fn get(
         &self,
         hash: &NodeHash,
-    ) -> Result<Node<Branch<NodeHash>, Extension<V>, NodeHash>, Self::Error>;
+    ) -> Result<Node<Branch<NodeHash>, Extension<NodeHash>, Leaf<V>>, Self::Error>;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -53,16 +53,19 @@ pub type NodeHash = [u8; 32];
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct MemoryDb<V> {
-    leaves: BTreeMap<NodeHash, Node<Branch<NodeHash>, Extension<V>, NodeHash>>,
+    leaves: BTreeMap<NodeHash, Node<Branch<NodeHash>, Extension<NodeHash>, Leaf<V>>>,
 }
 
-impl<V: Clone> Db<V> for MemoryDb<V> {
+impl<V: Clone> Database<V> for MemoryDb<V> {
     type Error = Error;
 
     fn get(
         &self,
-        hash: &NodeHash,
-    ) -> Result<Node<Branch<NodeHash>, Extension<V>, NodeHash>, Self::Error> {
-        self.leaves.get(hash).cloned().ok_or(Error::NodeNotFound)
+        hash_idx: &NodeHash,
+    ) -> Result<Node<Branch<NodeHash>, Extension<NodeHash>, Leaf<V>>, Self::Error> {
+        self.leaves
+            .get(hash_idx)
+            .cloned()
+            .ok_or(Error::NodeNotFound)
     }
 }
