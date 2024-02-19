@@ -4,18 +4,14 @@ use alloc::vec::Vec;
 
 use crate::{Branch, Extension, Leaf, Store};
 
-use super::{BranchHash, Error, ExtensionHash, LeafHash, Node};
+use super::{BranchHash, Error, ExtensionHash, LeafHash, Node, NodeHash};
 
 pub struct Snapshot<V> {
     branches: Branches<BranchIdx, ExtensionIdx, LeafIdx>,
     extension: Extensions<BranchIdx, ExtensionIdx, LeafIdx, V>,
     leaves: Leaves<V>,
 
-    // We split these for better risc0 page locality.
-    // We only need to access them when verifying the witness, and rehashing.
-    branch_hashes: Vec<BranchHash>,
-    extension_hashes: Vec<ExtensionHash>,
-    leaf_hashes: Vec<LeafHash>,
+    unvisited: Vec<NodeHash>,
 }
 
 impl<V> Store<V> for Snapshot<V> {

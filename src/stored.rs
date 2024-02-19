@@ -7,9 +7,9 @@ use alloc::{collections::BTreeMap, fmt::Debug, string::String};
 use crate::{Branch, Extension, Leaf};
 
 pub trait MerkleStore<V>: Store<V> {
-    fn get_branch_hash(&self, hash: Self::BranchRef) -> &BranchHash;
-    fn get_extension_hash(&self, hash: Self::ExtensionRef) -> &ExtensionHash;
-    fn get_leaf_hash(&self, hash: Self::LeafRef) -> &LeafHash;
+    fn get_branch_hash(&self, idx: Self::BranchRef) -> &BranchHash;
+    fn get_extension_hash(&self, idx: Self::ExtensionRef) -> &ExtensionHash;
+    fn get_leaf_hash(&self, idx: Self::LeafRef) -> &LeafHash;
 }
 
 pub trait Store<V> {
@@ -22,14 +22,14 @@ pub trait Store<V> {
 
     fn get_branch(
         &self,
-        hash: Self::BranchRef,
+        idx: Self::BranchRef,
     ) -> Result<&Branch<Node<Self::BranchRef, Self::ExtensionRef, Self::LeafRef>>, Self::Error>;
     fn get_extension(
         &self,
-        hash: Self::ExtensionRef,
+        idx: Self::ExtensionRef,
     ) -> Result<&Extension<Self::BranchRef, Self::ExtensionRef, Self::LeafRef, V>, Self::Error>;
 
-    fn get_leaf(&self, hash: Self::LeafRef) -> Result<&Leaf<V>, Self::Error>;
+    fn get_leaf(&self, idx: Self::LeafRef) -> Result<&Leaf<V>, Self::Error>;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -51,14 +51,16 @@ impl From<Error> for String {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct BranchHash(pub [u8; 32]);
+pub type NodeHash = [u8; 32];
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct ExtensionHash(pub [u8; 32]);
+pub struct BranchHash(pub NodeHash);
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct LeafHash(pub [u8; 32]);
+pub struct ExtensionHash(pub NodeHash);
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct LeafHash(pub NodeHash);
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct MemoryStore<V> {
@@ -76,21 +78,21 @@ impl<V> Store<V> for MemoryStore<V> {
 
     fn get_branch(
         &self,
-        hash: Self::BranchRef,
+        idx: Self::BranchRef,
     ) -> Result<&Branch<Node<Self::BranchRef, Self::ExtensionRef, Self::LeafRef>>, Self::Error>
     {
-        self.branches.get(&hash).ok_or(Error::NodeNotFound)
+        self.branches.get(&idx).ok_or(Error::NodeNotFound)
     }
 
     fn get_extension(
         &self,
-        hash: Self::ExtensionRef,
+        idx: Self::ExtensionRef,
     ) -> Result<&Extension<Self::BranchRef, Self::ExtensionRef, Self::LeafRef, V>, Self::Error>
     {
-        self.extensions.get(&hash).ok_or(Error::NodeNotFound)
+        self.extensions.get(&idx).ok_or(Error::NodeNotFound)
     }
 
-    fn get_leaf(&self, hash: Self::LeafRef) -> Result<&Leaf<V>, Self::Error> {
-        self.leaves.get(&hash).ok_or(Error::NodeNotFound)
+    fn get_leaf(&self, idx: Self::LeafRef) -> Result<&Leaf<V>, Self::Error> {
+        self.leaves.get(&idx).ok_or(Error::NodeNotFound)
     }
 }
