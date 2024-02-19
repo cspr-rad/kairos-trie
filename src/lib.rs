@@ -10,7 +10,7 @@ pub mod stored;
 
 use std::iter;
 
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::{boxed::Box, string::String};
 pub use modified::*;
 pub use stored::Store;
 
@@ -105,12 +105,12 @@ pub enum TrieRoot<B, E, L, V> {
 
 pub struct Transaction<'s, S: Store<V>, V> {
     data_store: &'s S,
-    pub current_root: TrieRoot<S::BranchRef, S::ExtensionRef, S::LeafRef, V>,
+    pub current_root: TrieRoot<S::HashRef, S::HashRef, S::HashRef, V>,
 }
 
 impl<'s, S: Store<V>, V> Transaction<'s, S, V> {
     pub fn new(
-        root: TrieRoot<S::BranchRef, S::ExtensionRef, S::LeafRef, V>,
+        root: TrieRoot<S::HashRef, S::HashRef, S::HashRef, V>,
         data_store: &'s S,
     ) -> Self {
         Transaction {
@@ -121,7 +121,7 @@ impl<'s, S: Store<V>, V> Transaction<'s, S, V> {
 
     pub fn get<'a>(
         key_hash: &KeyHash,
-        node: &'a NodeRef<S::BranchRef, S::ExtensionRef, S::LeafRef, V>,
+        node: &'a NodeRef<S::HashRef, S::HashRef, S::HashRef, V>,
         data_store: &'s S,
     ) -> Result<Option<&'a V>, String>
     where

@@ -1,102 +1,72 @@
-use std::ops::Index;
-
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 
 use crate::{Branch, Extension, Leaf, Store};
 
-use super::{BranchHash, Error, ExtensionHash, LeafHash, Node, NodeHash};
+use super::{Error, Node, NodeHash, PartialStore};
+
+type Idx = u32;
 
 pub struct Snapshot<V> {
-    branches: Branches<BranchIdx, ExtensionIdx, LeafIdx>,
-    extension: Extensions<BranchIdx, ExtensionIdx, LeafIdx, V>,
-    leaves: Leaves<V>,
+    branches: Box<[Branch<Node<Idx, Idx, Idx>>]>,
+    extension: Box<[Extension<Idx, Idx, Idx, V>]>,
+    leaves: Box<[Leaf<V>]>,
 
-    unvisited: Vec<NodeHash>,
+    // Unvisited we only store the hash of.
+    unvisted_nodes: Vec<NodeHash>,
+}
+
+impl<V> Snapshot<V> {
+    fn get_branch(&self, idx: Idx) -> Option<&Branch<Node<Idx, Idx, Idx>>> {
+        let idx = idx as usize;
+
+        self.branches.get(idx)
+    }
+
+    fn get_extension(&self, idx: Idx) -> Option<&Extension<Idx, Idx, Idx, V>> {
+        // Wrapping here is safe because we will never have anything near 2^32 nodes in a Snapshot.
+        // So get will error if we wrap around.
+        //
+        // TODO ensure this, and keys don't overlap verifying a snapshot.
+        let idx = idx as usize - self.branches.len();
+
+        self.extension.get(idx)
+    }
+
+    fn get_leaf(&self, idx: Idx) -> Option<&Leaf<V>> {
+        let idx = idx as usize - self.branches.len() - self.extension.len();
+
+        self.leaves.get(idx)
+    }
+
+    fn get_unvisted_hash(&self, idx: Idx) -> Option<&NodeHash> {
+        let idx = idx as usize - self.branches.len() - self.extension.len() - self.leaves.len();
+
+        self.unvisted_nodes.get(idx)
+    }
 }
 
 impl<V> Store<V> for Snapshot<V> {
-    type BranchRef = BranchIdx;
-    type ExtensionRef = ExtensionIdx;
-    type LeafRef = LeafIdx;
+    type HashRef = Idx;
     type Error = Error;
 
-    fn get_branch(
-        &self,
-        idx: Self::BranchRef,
-    ) -> Result<&Branch<Node<Self::BranchRef, Self::ExtensionRef, Self::LeafRef>>, Self::Error>
-    {
-        self.branches
-            .0
-            .get(idx.0 as usize)
-            .ok_or(Error::NodeNotFound)
+    fn get_branch(&self, idx: &Self::HashRef) -> Result<&Branch<Node<Idx, Idx, Idx>>, Self::Error> {
+        self.get_branch(*idx).ok_or(Error::NodeNotFound)
     }
 
     fn get_extension(
         &self,
-        idx: Self::ExtensionRef,
-    ) -> Result<&Extension<Self::BranchRef, Self::ExtensionRef, Self::LeafRef, V>, Self::Error>
-    {
-        self.extension
-            .0
-            .get(idx.0 as usize)
-            .ok_or(Error::NodeNotFound)
+        idx: &Self::HashRef,
+    ) -> Result<&Extension<Idx, Idx, Idx, V>, Self::Error> {
+        self.get_extension(*idx).ok_or(Error::NodeNotFound)
     }
 
-    fn get_leaf(&self, idx: Self::LeafRef) -> Result<&Leaf<V>, Self::Error> {
-        self.leaves.0.get(idx.0 as usize).ok_or(Error::NodeNotFound)
+    fn get_leaf(&self, idx: &Self::HashRef) -> Result<&Leaf<V>, Self::Error> {
+        self.get_leaf(*idx).ok_or(Error::NodeNotFound)
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Branches<B, E, L>(pub Vec<Branch<Node<B, E, L>>>);
-
-impl<B, E, L> Default for Branches<B, E, L> {
-    fn default() -> Self {
-        Branches(Vec::new())
-    }
-}
-
-impl<B, E, L> Index<BranchIdx> for Branches<B, E, L> {
-    type Output = Branch<Node<B, E, L>>;
-    fn index(&self, idx: BranchIdx) -> &Self::Output {
-        &self.0[idx.0 as usize]
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-#[repr(transparent)]
-pub struct BranchIdx(pub u32);
-
-impl From<usize> for BranchIdx {
-    fn from(idx: usize) -> Self {
-        BranchIdx(idx as u32)
-    }
-}
-
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-#[repr(transparent)]
-pub struct Extensions<B, E, L, V>(pub Vec<Extension<B, E, L, V>>);
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-#[repr(transparent)]
-pub struct ExtensionIdx(pub u32);
-
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
-pub struct Leaves<V>(pub Vec<Leaf<V>>);
-
-impl<V> Index<LeafIdx> for Leaves<V> {
-    type Output = Leaf<V>;
-    fn index(&self, idx: LeafIdx) -> &Leaf<V> {
-        &self.0[idx.0 as usize]
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-#[repr(transparent)]
-pub struct LeafIdx(pub u32);
-
-impl From<usize> for LeafIdx {
-    fn from(idx: usize) -> Self {
-        LeafIdx(idx as u32)
+impl<V> PartialStore<V> for Snapshot<V> {
+    fn get_unvisted_hash(&self, hash_ref: &Self::HashRef) -> Result<&NodeHash, Self::Error> {
+        self.get_unvisted_hash(*hash_ref).ok_or(Error::NodeNotFound)
     }
 }
