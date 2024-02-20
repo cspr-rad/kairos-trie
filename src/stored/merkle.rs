@@ -51,6 +51,7 @@ impl<V> Store<V> for Snapshot<V> {
     }
 }
 
+// Maybe just use Box with nightly Allocator parameter.
 #[self_referencing]
 pub struct SnapshotBuilder<Db: 'static, V: 'static> {
     db: Db,

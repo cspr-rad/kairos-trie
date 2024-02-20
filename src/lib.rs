@@ -17,16 +17,9 @@ pub use stored::Store;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct KeyHash(pub [u32; 8]);
 
-#[inline(always)]
-fn bit_at(hash_segment: u32, rel_bit_idx: u32) -> bool {
-    (hash_segment >> rel_bit_idx) & 1 == 1
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Branch<NR> {
-    // TODO we can make bit_idx a debug only field by counting leading zeros in l ^ r
-    // We may want to keep it because risc0 does not have a leading zeros instruction
-    rel_bit_idx: u32,
+    bit_idx: u32,
     left_bits: u32,
     right_bits: u32,
     pub left: NR,
@@ -59,7 +52,7 @@ impl<V> Branch<NodeRef<V>> {
                 (
                     idx,
                     Branch {
-                        rel_bit_idx,
+                        bit_idx: rel_bit_idx + (idx * 32) as u32,
                         left_bits,
                         right_bits,
                         left,
@@ -75,13 +68,37 @@ impl<V> Branch<NodeRef<V>> {
 }
 
 impl<NR> Branch<NR> {
-    pub fn desend<T>(&self, hash_segment: u32, left: T, right: T) -> T {
-        if bit_at(hash_segment, self.rel_bit_idx) {
-            left
+    pub fn desend<T>(
+        &self,
+        bit_idx: u32,
+        hash_segment: u32,
+        left: impl FnOnce() -> T,
+        right: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let rel_bit_idx = self.bit_idx - bit_idx;
+        debug_assert!(rel_bit_idx < 32, "Bit index must be less than 32");
+        debug_assert_eq!(
+            (self.left_bits ^ self.right_bits).leading_zeros(),
+            rel_bit_idx
+        );
+
+        // The mask of the prefix of the branch and the discriminant
+        let prefix_mask: u32 = (1 << (rel_bit_idx + 1)) - 1;
+        debug_assert_eq!(prefix_mask.count_ones(), (rel_bit_idx + 1));
+
+        if (hash_segment ^ self.left_bits) & prefix_mask == 0 {
+            Some(left())
+        } else if (hash_segment ^ self.right_bits) & prefix_mask == 0 {
+            Some(right())
         } else {
-            right
+            None
         }
     }
+}
+
+#[inline(always)]
+fn bit_at(hash_segment: u32, rel_bit_idx: u32) -> bool {
+    ((hash_segment >> rel_bit_idx) & 1) == 1
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -103,46 +120,88 @@ pub enum TrieRoot<V> {
     Node(NodeRef<V>),
 }
 
-pub struct Transaction<'s, S: Store<V>, V> {
-    data_store: &'s S,
+pub struct Transaction<S: Store<V>, V> {
+    data_store: S,
     pub current_root: TrieRoot<V>,
 }
 
-impl<'s, S: Store<V>, V> Transaction<'s, S, V> {
-    pub fn new(root: TrieRoot<V>, data_store: &'s S) -> Self {
+impl<S: Store<V>, V> Transaction<S, V> {
+    pub fn new(root: TrieRoot<V>, data_store: S) -> Self {
         Transaction {
             current_root: root,
             data_store,
         }
     }
 
-    pub fn get<'a>(
-        key_hash: &KeyHash,
-        node: &'a NodeRef<V>,
-        data_store: &'s S,
-    ) -> Result<Option<&'a V>, String>
-    where
-        's: 'a,
-    {
-        todo!();
+    pub fn get(&mut self, key_hash: &KeyHash) -> Result<Option<&V>, String> {
+        match &self.current_root {
+            TrieRoot::Empty => Ok(None),
+            TrieRoot::Node(node_ref) => Self::get_node(&mut self.data_store, node_ref, key_hash),
+        }
     }
 
-    // pub fn get_node(&self, key_hash: &KeyHash) -> Result<Option<NodeRef<HR, V>>, String> {}
+    pub fn get_node<'root>(
+        data_store: &mut S,
+        mut node_ref: &'root NodeRef<V>,
+        key_hash: &KeyHash,
+    ) -> Result<Option<&'root V>, String> {
+        let mut word_idx = 0;
+        let mut hash_segment = key_hash.0[word_idx as usize];
 
-    // fn get_modified_branch(
-    //     &self,
-    //     mut branch: &Branch<NodeRef<HR, V>>,
+        // Will be overwritten by the first or extension node
+        let mut prior_hash_word = 0;
+
+        loop {
+            let bit_idx = word_idx * 32;
+
+            match node_ref {
+                NodeRef::ModBranch(branch) => {
+                    debug_assert!(word_idx < 256, "Bit index must be less than 256");
+
+                    if branch.bit_idx - bit_idx > 31 {
+                        if prior_hash_word == hash_segment {
+                            // TODO: assert tree did not start as a branch
+                            // this case is possible once we allow transaction spliting
+                            word_idx += 1;
+                            hash_segment = key_hash.0[word_idx as usize];
+                        } else {
+                            return Ok(None);
+                        }
+                    }
+
+                    let Some((next, bits)) = branch.desend(
+                        bit_idx,
+                        hash_segment,
+                        || (&branch.left, branch.left_bits),
+                        || (&branch.right, branch.right_bits),
+                    ) else {
+                        return Ok(None);
+                    };
+
+                    node_ref = next;
+                }
+                NodeRef::ModExtension(_) => todo!(),
+                NodeRef::ModLeaf(leaf) => {
+                    if leaf.key_hash == *key_hash {
+                        return Ok(Some(&leaf.value));
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                NodeRef::Stored(stored_idx) => {
+                    let _todo = data_store.get_node(*stored_idx).map_err(|e| e.into())?;
+                }
+            }
+        }
+    }
+
+    // fn get_modified(
+    //     &mut self,
+    //     mut branch: &Branch<NodeRef<V>>,
     //     key_hash: &KeyHash,
-    //     hash_idx: u32,
-    // ) -> Result<Option<&Leaf<V>>, String> {
-    //     let mut hash_segment = key_hash.0[hash_idx as usize];
+    //     hash_word_idx: u32,
+    // ) -> Result<Option<&V>, String> {
     //     loop {
-    //         let next = if bit_at(hash_segment, branch.rel_bit_idx) {
-    //             &branch.right
-    //         } else {
-    //             &branch.left
-    //         };
-
     //         match next {
     //             NodeRef::ModBranch(next_branch) => branch = next_branch,
     //             NodeRef::ModExtension(_) => {
@@ -152,16 +211,10 @@ impl<'s, S: Store<V>, V> Transaction<'s, S, V> {
 
     //             NodeRef::ModLeaf(leaf) => {
     //                 if leaf.key_hash == *key_hash {
-    //                     return Ok(Some(leaf.as_ref()));
+    //                     return Ok(Some(&leaf.value));
     //                 } else {
     //                     return Ok(None);
     //                 }
-    //             }
-    //             NodeRef::StoredBranch(br) => {
-    //                 return self.get_stored_branch(*br, key_hash);
-    //             }
-    //             NodeRef::StoredLeaf(lr) => {
-    //                 return self.get_stored_leaf(*lr, key_hash);
     //             }
     //             NodeRef::StoredExtension(_) => todo!(),
     //         };

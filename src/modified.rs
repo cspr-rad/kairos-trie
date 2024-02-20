@@ -8,5 +8,5 @@ pub enum NodeRef<V> {
     ModExtension(Box<Extension<V>>),
     ModLeaf(Box<Leaf<V>>),
 
-    StoredBranch(stored::Idx),
+    Stored(stored::Idx),
 }
