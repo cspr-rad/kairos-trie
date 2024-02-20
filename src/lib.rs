@@ -70,12 +70,12 @@ impl<V> Branch<NodeRef<V>> {
 impl<NR> Branch<NR> {
     pub fn desend<T>(
         &self,
-        bit_idx: u32,
+        bit_idx: usize,
         hash_segment: u32,
         left: impl FnOnce() -> T,
         right: impl FnOnce() -> T,
     ) -> Option<T> {
-        let rel_bit_idx = self.bit_idx - bit_idx;
+        let rel_bit_idx = self.bit_idx - bit_idx as u32;
         debug_assert!(rel_bit_idx < 32, "Bit index must be less than 32");
         debug_assert_eq!(
             (self.left_bits ^ self.right_bits).leading_zeros(),
@@ -104,7 +104,7 @@ fn bit_at(hash_segment: u32, rel_bit_idx: u32) -> bool {
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Extension<NR> {
     next: NR,
-    bits: Box<[u8]>,
+    bits: Box<[u32]>,
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -145,42 +145,74 @@ impl<S: Store<V>, V> Transaction<S, V> {
         mut node_ref: &'root NodeRef<V>,
         key_hash: &KeyHash,
     ) -> Result<Option<&'root V>, String> {
+        // We could use an iterator for these two, but it'd be slightly less efficient.
+        // TODO: benchmark this
         let mut word_idx = 0;
-        let mut hash_segment = key_hash.0[word_idx as usize];
+        let mut hash_segment = key_hash.0[word_idx];
 
         // Will be overwritten by the first or extension node
         let mut prior_hash_word = 0;
 
         loop {
-            let bit_idx = word_idx * 32;
+            debug_assert!(word_idx < 8);
+            debug_assert_eq!(hash_segment, key_hash.0[word_idx]);
 
             match node_ref {
                 NodeRef::ModBranch(branch) => {
-                    debug_assert!(word_idx < 256, "Bit index must be less than 256");
+                    let mut bit_idx = word_idx * 32;
+                    let rel_bit_idx = branch.bit_idx as usize - bit_idx;
 
-                    if branch.bit_idx - bit_idx > 31 {
+                    // Move to the next word if the last word was fully matched
+                    if rel_bit_idx > 31 {
                         if prior_hash_word == hash_segment {
                             // TODO: assert tree did not start as a branch
                             // this case is possible once we allow transaction spliting
                             word_idx += 1;
-                            hash_segment = key_hash.0[word_idx as usize];
+                            bit_idx += 32;
+                            hash_segment = key_hash.0[word_idx];
                         } else {
                             return Ok(None);
                         }
                     }
 
-                    let Some((next, bits)) = branch.desend(
+                    debug_assert!(word_idx < 8);
+                    debug_assert_eq!(bit_idx, word_idx * 32);
+                    debug_assert_eq!(hash_segment, key_hash.0[word_idx]);
+                    debug_assert_eq!(hash_segment, key_hash.0[branch.bit_idx as usize / 32]);
+
+                    let next = branch.desend(
                         bit_idx,
                         hash_segment,
                         || (&branch.left, branch.left_bits),
                         || (&branch.right, branch.right_bits),
-                    ) else {
-                        return Ok(None);
-                    };
+                    );
 
-                    node_ref = next;
+                    match next {
+                        Some((next, bits)) => {
+                            prior_hash_word = bits;
+                            node_ref = next;
+                        }
+                        None => return Ok(None),
+                    }
                 }
-                NodeRef::ModExtension(_) => todo!(),
+                NodeRef::ModExtension(extension) => {
+                    word_idx += 1;
+                    debug_assert!(word_idx < 8);
+
+                    let matched =
+                        iter::zip(extension.bits.iter(), key_hash.0.into_iter().skip(word_idx))
+                            .all(|(a, b)| *a == b);
+
+                    if matched {
+                        word_idx += extension.bits.len();
+                        prior_hash_word = key_hash.0[word_idx];
+                        debug_assert!(word_idx < 8);
+                        debug_assert_eq!(hash_segment, key_hash.0[word_idx]);
+                        node_ref = &extension.next;
+                    } else {
+                        return Ok(None);
+                    }
+                }
                 NodeRef::ModLeaf(leaf) => {
                     if leaf.key_hash == *key_hash {
                         return Ok(Some(&leaf.value));
@@ -195,57 +227,19 @@ impl<S: Store<V>, V> Transaction<S, V> {
         }
     }
 
-    // fn get_modified(
-    //     &mut self,
-    //     mut branch: &Branch<NodeRef<V>>,
-    //     key_hash: &KeyHash,
-    //     hash_word_idx: u32,
-    // ) -> Result<Option<&V>, String> {
-    //     loop {
-    //         match next {
-    //             NodeRef::ModBranch(next_branch) => branch = next_branch,
-    //             NodeRef::ModExtension(_) => {
-    //                 // let iter::zip(bits.iter(), key_hash.0.iter().skip(hash_seg_idx as usize)) .find(|(a, b)| a != b);
-    //                 todo!();
-    //             }
+    pub fn get_stored_node<'root>(
+        data_store: &mut S,
+        stored_idx: stored::Idx,
+        key_hash: &KeyHash,
+        word_idx: usize,
+        hash_segment: u32,
+        prior_hash_word: u32,
+    ) -> Result<Option<&'root V>, String> {
+        debug_assert!(word_idx < 8);
+        debug_assert_eq!(hash_segment, key_hash.0[word_idx]);
 
-    //             NodeRef::ModLeaf(leaf) => {
-    //                 if leaf.key_hash == *key_hash {
-    //                     return Ok(Some(&leaf.value));
-    //                 } else {
-    //                     return Ok(None);
-    //                 }
-    //             }
-    //             NodeRef::StoredExtension(_) => todo!(),
-    //         };
-    //     }
-    // }
-
-    // pub fn get_stored_branch(
-    //     &self,
-    //     mut branch_ref: B,
-    //     key_hash: &KeyHash,
-    // ) -> Result<Option<&Leaf<V>>, String> {
-    //     loop {
-    //         let branch = self.data_store.get_branch(branch_ref)?;
-
-    //         let node_ref = branch.desend(
-    //             key_hash.0[branch.rel_bit_idx as usize],
-    //             branch.left,
-    //             branch.right,
-    //         );
-
-    //         match node_ref {
-    //             stored::Node::Branch(br) => {
-    //                 branch_ref = br;
-    //             }
-    //             stored::Node::Leaf(lr) => {
-    //                 return self.get_stored_leaf(lr, key_hash);
-    //             }
-    //             stored::Node::Extension(_) => todo!(),
-    //         }
-    //     }
-    // }
+        todo!()
+    }
 
     // pub fn get_stored_leaf(&self, leaf: L, key_hash: &KeyHash) -> Result<Option<&Leaf<V>>, String> {
     //     let leaf = self.data_store.get_leaf(leaf)?;

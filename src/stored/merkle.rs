@@ -138,14 +138,14 @@ impl<Db: 'static + Database<V>, V: 'static> SnapshotBuilder<Db, V> {
 
         Ok(match node {
             Node::Branch(Branch {
-                rel_bit_idx,
+                bit_idx,
                 left_bits,
                 right_bits,
                 left,
                 right,
             }) => (
                 Node::Branch(&*bump.alloc(Branch {
-                    rel_bit_idx,
+                    bit_idx,
                     left_bits,
                     right_bits,
                     left: next_idx,
