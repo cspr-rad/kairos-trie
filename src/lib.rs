@@ -43,10 +43,12 @@ impl<NR> Branch<NR> {
         self.prefix_discriminant_suffix & self.discriminant_trailing_bits_mask
     }
 
+    #[allow(dead_code)]
     fn discriminant_bit_idx(&self) -> u32 {
         self.discriminant_trailing_bits_mask.leading_zeros()
     }
 
+    #[allow(dead_code)]
     fn prefix_mask(&self) -> u32 {
         self.discriminant_bit_mask() - 1
     }
