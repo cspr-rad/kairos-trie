@@ -10,102 +10,126 @@ pub mod stored;
 
 use std::iter;
 
-use alloc::{boxed::Box, string::String};
+use alloc::{string::String, vec::Vec};
 pub use modified::*;
 pub use stored::Store;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct KeyHash(pub [u32; 8]);
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Branch<NR> {
     bit_idx: u32,
-    left_bits: u32,
-    right_bits: u32,
+    /// Contains prefix bits, 1, suffix bits, trailing 0s.
+    /// Zero occurs at the bit index of the branch.
+    prefix_discriminant_suffix: u32,
+    /// Contains 1 in the discriminant bit.
+    /// Contains 1 in all divergent suffix bits.
+    /// These are the trailing zeros in `prefix_suffix`.
+    ///
+    /// If the mask is 1 it represents the divergent bit not a single divirgent suffix bit.
+    ///
+    /// bit_idx_mask = prefix_discriminant_suffix & discriminant_trailing_bits_mask;
+    /// bit_idx = bit_idx_mask.leading_zeros() == discriminant_trailing_bits_mask.leading_zeros()
+    discriminant_trailing_bits_mask: u32,
     pub left: NR,
     pub right: NR,
-}
 
-impl<V> Branch<NodeRef<V>> {
-    /// Create a new branch.
-    /// Returns the byte index of the branch for creating an extension node.
-    pub fn from_hashed_key_bits(
-        _prior_bit_idx: u8,
-        a_leaf_idx: NodeRef<V>,
-        a_hash: &KeyHash,
-        b_hash: &KeyHash,
-        b_leaf_idx: NodeRef<V>,
-    ) -> (usize, Self) {
-        iter::zip(a_hash.0, b_hash.0)
-            .enumerate()
-            .find(|(_, (a, b))| a != b)
-            .map(|(idx, (a, b))| {
-                let matched = a ^ b;
-                let rel_bit_idx = matched.leading_zeros();
-
-                let (left, right, left_bits, right_bits) = if bit_at(a, rel_bit_idx) {
-                    (b_leaf_idx, a_leaf_idx, b, a)
-                } else {
-                    (a_leaf_idx, b_leaf_idx, a, b)
-                };
-
-                (
-                    idx,
-                    Branch {
-                        bit_idx: rel_bit_idx + (idx * 32) as u32,
-                        left_bits,
-                        right_bits,
-                        left,
-                        right,
-                    },
-                )
-            })
-            .unwrap_or_else(|| {
-                // TODO handle the case where the two hashes are equal
-                panic!("The two hashes are equal");
-            })
-    }
+    pub extension: Vec<u32>,
 }
 
 impl<NR> Branch<NR> {
-    pub fn desend<T>(
-        &self,
-        bit_idx: usize,
-        hash_segment: u32,
-        left: impl FnOnce() -> T,
-        right: impl FnOnce() -> T,
-    ) -> Option<T> {
-        let rel_bit_idx = self.bit_idx - bit_idx as u32;
-        debug_assert!(rel_bit_idx < 32, "Bit index must be less than 32");
-        debug_assert_eq!(
-            (self.left_bits ^ self.right_bits).leading_zeros(),
-            rel_bit_idx
+    fn discriminant_bit_mask(&self) -> u32 {
+        self.prefix_discriminant_suffix & self.discriminant_trailing_bits_mask
+    }
+
+    fn discriminant_bit_idx(&self) -> u32 {
+        self.discriminant_trailing_bits_mask.leading_zeros()
+    }
+
+    fn prefix_mask(&self) -> u32 {
+        self.discriminant_bit_mask() - 1
+    }
+
+    fn is_right_descendant(&self, hash_segment: u32) -> bool {
+        self.prefix_discriminant_suffix ^ hash_segment ^ self.discriminant_trailing_bits_mask == 0
+    }
+
+    fn is_left_descendant(&self, hash_segment: u32) -> bool {
+        let zero_discriminant =
+            self.prefix_discriminant_suffix ^ self.discriminant_trailing_bits_mask;
+        zero_discriminant ^ hash_segment ^ self.discriminant_trailing_bits_mask == 0
+    }
+
+    fn trailing_bits_mask(&self) -> u32 {
+        self.discriminant_bit_mask() ^ self.discriminant_trailing_bits_mask
+    }
+
+    fn no_trailing_bits(&self) -> bool {
+        let r = self.trailing_bits_mask() == 0;
+        debug_assert!(
+            !r && self.extension.is_empty(),
+            "A branch with trailing bits cannot have an extension"
         );
 
-        // The mask of the prefix of the branch and the discriminant
-        let prefix_mask: u32 = (1 << (rel_bit_idx + 1)) - 1;
-        debug_assert_eq!(prefix_mask.count_ones(), (rel_bit_idx + 1));
-
-        if (hash_segment ^ self.left_bits) & prefix_mask == 0 {
-            Some(left())
-        } else if (hash_segment ^ self.right_bits) & prefix_mask == 0 {
-            Some(right())
-        } else {
-            None
-        }
+        r
     }
 }
 
-#[inline(always)]
-fn bit_at(hash_segment: u32, rel_bit_idx: u32) -> bool {
-    ((hash_segment >> rel_bit_idx) & 1) == 1
-}
+// impl<V> Branch<NodeRef<V>> {
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct Extension<NR> {
-    next: NR,
-    bits: Box<[u32]>,
-}
+//     /// Create a new branch.
+//     /// Returns the byte index of the branch for creating an extension node.
+//     pub fn from_hashed_key_bits(
+//         _prior_bit_idx: u8,
+//         a_leaf_idx: NodeRef<V>,
+//         a_hash: &KeyHash,
+//         b_hash: &KeyHash,
+//         b_leaf_idx: NodeRef<V>,
+//     ) -> (usize, Self) {
+//         iter::zip(a_hash.0, b_hash.0)
+//             .enumerate()
+//             .find(|(_, (a, b))| a != b)
+//             .map(|(idx, (a, b))| {
+//                 let matched = a ^ b;
+
+//                 let rel_bit_idx = matched.leading_zeros();
+//                 let rel_bit_mask = 1 << rel_bit_idx;
+
+//                 let prefix_mask = rel_bit_mask - 1;
+
+//                 let suffix_mask = !(prefix_mask | rel_bit_mask);
+
+//                 let common_suffix =
+
+//                 let prefix_suffix = todo!();
+//                 let suffix_mask = todo!();
+//                 let prefix_suffix =
+//                     (left_bits & !((rel_bit_mask) - 1)) | (right_bits & ((1 << rel_bit_idx) - 1));
+//                 let suffix_mask = !(matched - 1);
+//                 let (left, right, left_bits, right_bits) = if bit_at(a, rel_bit_idx) {
+//                     (b_leaf_idx, a_leaf_idx, b, a)
+//                 } else {
+//                     (a_leaf_idx, b_leaf_idx, a, b)
+//                 };
+
+//                 (
+//                     idx,
+//                     Branch {
+//                         bit_idx: rel_bit_idx + (idx * 32) as u32,
+//                         prefix_suffix,
+//                         suffix_mask,
+//                         left,
+//                         right,
+//                     },
+//                 )
+//             })
+//             .unwrap_or_else(|| {
+//                 // TODO handle the case where the two hashes are equal
+//                 panic!("The two hashes are equal");
+//             })
+//     }
+// }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Leaf<V> {
@@ -140,78 +164,38 @@ impl<S: Store<V>, V> Transaction<S, V> {
         }
     }
 
-    pub fn get_node<'root>(
-        data_store: &mut S,
+    pub fn get_node<'root, 's: 'root>(
+        data_store: &'s mut S,
         mut node_ref: &'root NodeRef<V>,
         key_hash: &KeyHash,
     ) -> Result<Option<&'root V>, String> {
-        // We could use an iterator for these two, but it'd be slightly less efficient.
-        // TODO: benchmark this
         let mut word_idx = 0;
-        let mut hash_segment = key_hash.0[word_idx];
-
-        // Will be overwritten by the first or extension node
-        let mut prior_hash_word = 0;
-
         loop {
             debug_assert!(word_idx < 8);
-            debug_assert_eq!(hash_segment, key_hash.0[word_idx]);
+            let hash_segment = key_hash.0[word_idx];
 
             match node_ref {
                 NodeRef::ModBranch(branch) => {
-                    let mut bit_idx = word_idx * 32;
-                    let rel_bit_idx = branch.bit_idx as usize - bit_idx;
+                    let next = if branch.is_right_descendant(hash_segment) {
+                        &branch.right
+                    } else if branch.is_left_descendant(hash_segment) {
+                        &branch.left
+                    } else {
+                        return Ok(None);
+                    };
 
-                    // Move to the next word if the last word was fully matched
-                    if rel_bit_idx > 31 {
-                        if prior_hash_word == hash_segment {
-                            // TODO: assert tree did not start as a branch
-                            // this case is possible once we allow transaction spliting
-                            word_idx += 1;
-                            bit_idx += 32;
-                            hash_segment = key_hash.0[word_idx];
-                        } else {
-                            return Ok(None);
-                        }
-                    }
+                    let check_extension =
+                        iter::zip(branch.extension.iter(), key_hash.0.iter().skip(word_idx))
+                            .all(|(a, b)| a == b);
 
-                    debug_assert!(word_idx < 8);
-                    debug_assert_eq!(bit_idx, word_idx * 32);
-                    debug_assert_eq!(hash_segment, key_hash.0[word_idx]);
-                    debug_assert_eq!(hash_segment, key_hash.0[branch.bit_idx as usize / 32]);
-
-                    let next = branch.desend(
-                        bit_idx,
-                        hash_segment,
-                        || (&branch.left, branch.left_bits),
-                        || (&branch.right, branch.right_bits),
-                    );
-
-                    match next {
-                        Some((next, bits)) => {
-                            prior_hash_word = bits;
-                            node_ref = next;
-                        }
-                        None => return Ok(None),
-                    }
-                }
-                NodeRef::ModExtension(extension) => {
-                    word_idx += 1;
-                    debug_assert!(word_idx < 8);
-
-                    let matched =
-                        iter::zip(extension.bits.iter(), key_hash.0.into_iter().skip(word_idx))
-                            .all(|(a, b)| *a == b);
-
-                    if matched {
-                        word_idx += extension.bits.len();
-                        prior_hash_word = key_hash.0[word_idx];
-                        debug_assert!(word_idx < 8);
-                        debug_assert_eq!(hash_segment, key_hash.0[word_idx]);
-                        node_ref = &extension.next;
+                    // advance to the next word if this one is matched
+                    if branch.no_trailing_bits() && check_extension {
+                        word_idx += 1 + branch.extension.len();
                     } else {
                         return Ok(None);
                     }
+
+                    node_ref = next;
                 }
                 NodeRef::ModLeaf(leaf) => {
                     if leaf.key_hash == *key_hash {
@@ -221,24 +205,62 @@ impl<S: Store<V>, V> Transaction<S, V> {
                     }
                 }
                 NodeRef::Stored(stored_idx) => {
-                    let _todo = data_store.get_node(*stored_idx).map_err(|e| e.into())?;
+                    return Self::get_stored_node(data_store, *stored_idx, key_hash, word_idx);
                 }
             }
         }
     }
 
-    pub fn get_stored_node<'root>(
-        data_store: &mut S,
-        stored_idx: stored::Idx,
+    pub fn get_stored_node<'s>(
+        data_store: &'s mut S,
+        mut stored_idx: stored::Idx,
         key_hash: &KeyHash,
-        word_idx: usize,
-        hash_segment: u32,
-        prior_hash_word: u32,
-    ) -> Result<Option<&'root V>, String> {
+        mut word_idx: usize,
+    ) -> Result<Option<&'s V>, String> {
         debug_assert!(word_idx < 8);
-        debug_assert_eq!(hash_segment, key_hash.0[word_idx]);
 
-        todo!()
+        loop {
+            let node = data_store.get_node(stored_idx).map_err(|e| e.into())?;
+
+            match node {
+                stored::Node::Branch(branch) => {
+                    let hash_segment = key_hash.0[word_idx];
+
+                    stored_idx = if branch.is_right_descendant(hash_segment) {
+                        branch.right
+                    } else if branch.is_left_descendant(hash_segment) {
+                        branch.left
+                    } else {
+                        return Ok(None);
+                    };
+
+                    let check_extension =
+                        iter::zip(branch.extension.iter(), key_hash.0.iter().skip(word_idx))
+                            .all(|(a, b)| a == b);
+
+                    // advance to the next word if this one is matched
+                    if branch.no_trailing_bits() && check_extension {
+                        word_idx += 1 + branch.extension.len();
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                stored::Node::Leaf(_) => {
+                    break;
+                }
+            }
+        }
+
+        // This makes the borrow checker happy
+        if let stored::Node::Leaf(leaf) = data_store.get_node(stored_idx).map_err(|e| e.into())? {
+            if leaf.key_hash == *key_hash {
+                Ok(Some(&leaf.value))
+            } else {
+                Ok(None)
+            }
+        } else {
+            unreachable!("The prior loop only breaks if the node is a leaf");
+        }
     }
 
     // pub fn get_stored_leaf(&self, leaf: L, key_hash: &KeyHash) -> Result<Option<&Leaf<V>>, String> {

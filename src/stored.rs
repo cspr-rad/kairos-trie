@@ -4,7 +4,7 @@ use std::hash::Hash;
 
 use alloc::{collections::BTreeMap, fmt::Debug, string::String};
 
-use crate::{Branch, Extension, Leaf};
+use crate::{Branch, Leaf};
 
 pub type Idx = u32;
 
@@ -15,25 +15,18 @@ pub trait Store<V> {
     /// May return a hash of a node that has already been visited.
     fn get_unvisted_hash(&self, hash_idx: Idx) -> Result<&NodeHash, Self::Error>;
 
-    fn get_node(
-        &mut self,
-        hash_idx: Idx,
-    ) -> Result<Node<&Branch<Idx>, &Extension<Idx>, &Leaf<V>>, Self::Error>;
+    fn get_node(&mut self, hash_idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>, Self::Error>;
 }
 
 pub trait Database<V> {
     type Error: Into<String>;
 
-    fn get(
-        &self,
-        hash: &NodeHash,
-    ) -> Result<Node<Branch<NodeHash>, Extension<NodeHash>, Leaf<V>>, Self::Error>;
+    fn get(&self, hash: &NodeHash) -> Result<Node<Branch<NodeHash>, Leaf<V>>, Self::Error>;
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum Node<B, E, L> {
+pub enum Node<B, L> {
     Branch(B),
-    Extension(E),
     Leaf(L),
 }
 
@@ -53,16 +46,13 @@ pub type NodeHash = [u8; 32];
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct MemoryDb<V> {
-    leaves: BTreeMap<NodeHash, Node<Branch<NodeHash>, Extension<NodeHash>, Leaf<V>>>,
+    leaves: BTreeMap<NodeHash, Node<Branch<NodeHash>, Leaf<V>>>,
 }
 
 impl<V: Clone> Database<V> for MemoryDb<V> {
     type Error = Error;
 
-    fn get(
-        &self,
-        hash_idx: &NodeHash,
-    ) -> Result<Node<Branch<NodeHash>, Extension<NodeHash>, Leaf<V>>, Self::Error> {
+    fn get(&self, hash_idx: &NodeHash) -> Result<Node<Branch<NodeHash>, Leaf<V>>, Self::Error> {
         self.leaves
             .get(hash_idx)
             .cloned()
