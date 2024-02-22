@@ -130,7 +130,7 @@ impl<Db: 'static + Database<V>, V: 'static> SnapshotBuilder<Db, V> {
                 discriminant_trailing_bits_mask,
                 left,
                 right,
-                extension,
+                prefix: extension,
             }) => (
                 Node::Branch(&*bump.alloc(Branch {
                     bit_idx,
@@ -138,7 +138,7 @@ impl<Db: 'static + Database<V>, V: 'static> SnapshotBuilder<Db, V> {
                     discriminant_trailing_bits_mask,
                     left: next_idx,
                     right: next_idx + 1,
-                    extension,
+                    prefix: extension,
                 })),
                 Some(left),
                 Some(right),

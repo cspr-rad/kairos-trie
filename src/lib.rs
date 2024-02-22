@@ -35,7 +35,9 @@ pub struct Branch<NR> {
     pub left: NR,
     pub right: NR,
 
-    pub extension: Vec<u32>,
+    /// The the segment of the hash key from the last branch to this branch.
+    /// Will be empty if the last branch had no trailing bits.
+    pub prefix: Vec<u32>,
 }
 
 impl<NR> Branch<NR> {
@@ -43,7 +45,6 @@ impl<NR> Branch<NR> {
         self.prefix_discriminant_suffix & self.discriminant_trailing_bits_mask
     }
 
-    #[allow(dead_code)]
     fn discriminant_bit_idx(&self) -> u32 {
         self.discriminant_trailing_bits_mask.leading_zeros()
     }
@@ -73,7 +74,7 @@ impl<NR> Branch<NR> {
     fn no_trailing_bits(&self) -> bool {
         let r = self.trailing_bits_mask() == 0;
         debug_assert!(
-            !r && self.extension.is_empty(),
+            !r && self.prefix.is_empty(),
             "A branch with trailing bits cannot have an extension"
         );
 
@@ -82,15 +83,37 @@ impl<NR> Branch<NR> {
 }
 
 impl<V> Branch<NodeRef<V>> {
+    fn new_at_branch(branch: Box<Self>, leaf: Box<Leaf<V>>) {
+        let diff = branch.prefix_discriminant_suffix ^ leaf.key_hash.0[0];
+        debug_assert!(diff != 0);
+
+        let discriminant_bit_idx = diff.leading_zeros();
+        debug_assert!(
+            discriminant_bit_idx < branch.discriminant_bit_idx(),
+            "This leaf is not a descendant of the branch"
+        );
+    }
+
     /// Create a new branch.
-    /// Returns the byte index of the branch for creating an extension node.
-    pub fn from_hashed_key_bits(a_leaf: Box<Leaf<V>>, b_leaf: Box<Leaf<V>>) -> Self {
+    ///
+    /// prefix_start_idx is the index of the prior branch if the prior branch has trailing bits.
+    ///
+    /// # Panics
+    /// Panics if the keys are the same.
+    pub fn from_hashed_key_bits(
+        prefix_start_idx: usize,
+        a_leaf: Box<Leaf<V>>,
+        b_leaf: Box<Leaf<V>>,
+    ) -> Self {
         let Some((word_idx, (a, b))) = iter::zip(a_leaf.key_hash.0, b_leaf.key_hash.0)
+            .skip(prefix_start_idx)
             .enumerate()
             .find(|(_, (a, b))| a != b)
         else {
             panic!("The keys are the same")
         };
+        let prefix = a_leaf.key_hash.0[prefix_start_idx..word_idx].to_vec();
+        debug_assert_eq!(prefix, b_leaf.key_hash.0[prefix_start_idx..word_idx]);
 
         let diff = a ^ b;
         let discriminant_bit_idx = diff.leading_zeros();
@@ -111,7 +134,7 @@ impl<V> Branch<NodeRef<V>> {
             discriminant_trailing_bits_mask,
             left: (),
             right: (),
-            extension: Vec::new(),
+            prefix: Vec::new(),
         };
 
         let (left, right) = if branch.is_left_descendant(a) {
@@ -131,25 +154,13 @@ impl<V> Branch<NodeRef<V>> {
             (b_leaf, a_leaf)
         };
 
-        let extension = if branch.no_trailing_bits() {
-            iter::zip(
-                left.key_hash.0.iter().skip(word_idx + 1),
-                right.key_hash.0.iter().skip(word_idx + 1),
-            )
-            .take_while(|(a, b)| a == b)
-            .map(|(a, _)| *a)
-            .collect()
-        } else {
-            Vec::new()
-        };
-
         Branch {
             bit_idx: 0,
             prefix_discriminant_suffix,
             discriminant_trailing_bits_mask,
             left: NodeRef::ModLeaf(left),
             right: NodeRef::ModLeaf(right),
-            extension,
+            prefix,
         }
     }
 }
@@ -195,10 +206,21 @@ impl<S: Store<V>, V> Transaction<S, V> {
         let mut word_idx = 0;
         loop {
             debug_assert!(word_idx < 8);
-            let hash_segment = key_hash.0[word_idx];
 
             match node_ref {
                 NodeRef::ModBranch(branch) => {
+                    let check_prefix =
+                        iter::zip(branch.prefix.iter(), key_hash.0.iter().skip(word_idx))
+                            .all(|(a, b)| a == b);
+
+                    if check_prefix {
+                        word_idx += branch.prefix.len();
+                    } else {
+                        return Ok(None);
+                    }
+
+                    let hash_segment = key_hash.0[word_idx];
+
                     let next = if branch.is_right_descendant(hash_segment) {
                         &branch.right
                     } else if branch.is_left_descendant(hash_segment) {
@@ -207,13 +229,9 @@ impl<S: Store<V>, V> Transaction<S, V> {
                         return Ok(None);
                     };
 
-                    let check_extension =
-                        iter::zip(branch.extension.iter(), key_hash.0.iter().skip(word_idx))
-                            .all(|(a, b)| a == b);
-
-                    // advance to the next word if this one is matched
-                    if branch.no_trailing_bits() && check_extension {
-                        word_idx += 1 + branch.extension.len();
+                    // advance to the next word if this one is fully matched
+                    if branch.no_trailing_bits() {
+                        word_idx += 1;
                     } else {
                         return Ok(None);
                     }
@@ -247,6 +265,16 @@ impl<S: Store<V>, V> Transaction<S, V> {
 
             match node {
                 stored::Node::Branch(branch) => {
+                    let check_prefix =
+                        iter::zip(branch.prefix.iter(), key_hash.0.iter().skip(word_idx))
+                            .all(|(a, b)| a == b);
+
+                    if check_prefix {
+                        word_idx += branch.prefix.len();
+                    } else {
+                        return Ok(None);
+                    }
+
                     let hash_segment = key_hash.0[word_idx];
 
                     stored_idx = if branch.is_right_descendant(hash_segment) {
@@ -257,13 +285,9 @@ impl<S: Store<V>, V> Transaction<S, V> {
                         return Ok(None);
                     };
 
-                    let check_extension =
-                        iter::zip(branch.extension.iter(), key_hash.0.iter().skip(word_idx))
-                            .all(|(a, b)| a == b);
-
                     // advance to the next word if this one is matched
-                    if branch.no_trailing_bits() && check_extension {
-                        word_idx += 1 + branch.extension.len();
+                    if branch.no_trailing_bits() {
+                        word_idx += 1
                     } else {
                         return Ok(None);
                     }
@@ -322,15 +346,20 @@ impl<S: Store<V>, V> Transaction<S, V> {
         let mut word_idx = 0;
         loop {
             debug_assert!(word_idx < 8);
+            let check_prefix = iter::zip(branch.prefix.iter(), key_hash.0.iter().skip(word_idx))
+                .all(|(a, b)| a == b);
+
+            if check_prefix {
+                word_idx += branch.prefix.len();
+            } else {
+                todo!()
+            }
+
             let hash_segment = key_hash.0[word_idx];
 
-            let check_extension =
-                iter::zip(branch.extension.iter(), key_hash.0.iter().skip(word_idx))
-                    .all(|(a, b)| a == b);
-
             // advance to the next word if this one is matched
-            if branch.no_trailing_bits() && check_extension {
-                word_idx += 1 + branch.extension.len();
+            if branch.no_trailing_bits() {
+                word_idx += 1
             } else {
                 return Ok(());
             }
@@ -364,7 +393,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
                                     .discriminant_trailing_bits_mask,
                                 // TODO remove the clone
                                 // Maybe use a AsRef<[u32]> instead of Vec<u32>
-                                extension: new_branch.extension.clone(),
+                                prefix: new_branch.prefix.clone(),
                             }));
 
                             let NodeRef::ModBranch(next_branch) = next else {
