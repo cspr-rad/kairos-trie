@@ -126,16 +126,14 @@ impl<Db: 'static + Database<V>, V: 'static> SnapshotBuilder<Db, V> {
         Ok(match node {
             Node::Branch(Branch {
                 bit_idx,
-                prefix_discriminant_suffix,
-                discriminant_trailing_bits_mask,
+                masks,
                 left,
                 right,
                 prefix: extension,
             }) => (
                 Node::Branch(&*bump.alloc(Branch {
                     bit_idx,
-                    prefix_discriminant_suffix,
-                    discriminant_trailing_bits_mask,
+                    masks,
                     left: next_idx,
                     right: next_idx + 1,
                     prefix: extension,

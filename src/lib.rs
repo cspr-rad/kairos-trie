@@ -20,6 +20,18 @@ pub struct KeyHash(pub [u32; 8]);
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Branch<NR> {
     bit_idx: u32,
+
+    masks: BranchMasks,
+    pub left: NR,
+    pub right: NR,
+
+    /// The the segment of the hash key from the last branch to this branch.
+    /// Will be empty if the last branch had no trailing bits.
+    pub prefix: Vec<u32>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+struct BranchMasks {
     /// Contains prefix bits, 1, suffix bits, trailing 0s.
     /// Zero occurs at the bit index of the branch.
     prefix_discriminant_suffix: u32,
@@ -32,15 +44,29 @@ pub struct Branch<NR> {
     /// bit_idx_mask = prefix_discriminant_suffix & discriminant_trailing_bits_mask;
     /// bit_idx = bit_idx_mask.leading_zeros() == discriminant_trailing_bits_mask.leading_zeros()
     discriminant_trailing_bits_mask: u32,
-    pub left: NR,
-    pub right: NR,
-
-    /// The the segment of the hash key from the last branch to this branch.
-    /// Will be empty if the last branch had no trailing bits.
-    pub prefix: Vec<u32>,
 }
 
-impl<NR> Branch<NR> {
+impl BranchMasks {
+    const fn new(a: u32, b: u32) -> Self {
+        let diff = a ^ b;
+        let discriminant_bit_idx = diff.leading_zeros();
+        let discriminant_bit_mask = 1 << discriminant_bit_idx;
+
+        let trailing_bits_idx = (diff ^ discriminant_bit_mask).leading_zeros();
+        let not_trailing_bits_mask = (1 << trailing_bits_idx) - 1;
+
+        let prefix_discriminant_suffix = (a & not_trailing_bits_mask) | discriminant_bit_mask;
+
+        let trailing_bits_mask = !not_trailing_bits_mask;
+
+        let discriminant_trailing_bits_mask = trailing_bits_mask | discriminant_bit_mask;
+
+        BranchMasks {
+            prefix_discriminant_suffix,
+            discriminant_trailing_bits_mask,
+        }
+    }
+
     fn discriminant_bit_mask(&self) -> u32 {
         self.prefix_discriminant_suffix & self.discriminant_trailing_bits_mask
     }
@@ -72,35 +98,39 @@ impl<NR> Branch<NR> {
     }
 
     fn no_trailing_bits(&self) -> bool {
-        let r = self.trailing_bits_mask() == 0;
-        debug_assert!(
-            !r && self.prefix.is_empty(),
-            "A branch with trailing bits cannot have an extension"
-        );
-
-        r
+        self.trailing_bits_mask() == 0
     }
 }
 
 impl<V> Branch<NodeRef<V>> {
-    fn new_at_branch(branch: Box<Self>, leaf: Box<Leaf<V>>) {
-        let diff = branch.prefix_discriminant_suffix ^ leaf.key_hash.0[0];
-        debug_assert!(diff != 0);
+    #[allow(dead_code)]
+    fn new_at_branch(prefix_start_idx: usize, branch: Box<Self>, leaf: Box<Leaf<V>>) {
+        let prefix_diff = iter::zip(
+            branch.prefix.iter(),
+            leaf.key_hash.0.iter().skip(prefix_start_idx),
+        )
+        .enumerate()
+        .find(|(_, (a, b))| a != b)
+        .map(|(word_idx, (a, b))| (word_idx + prefix_start_idx, a, b));
 
-        let discriminant_bit_idx = diff.leading_zeros();
-        debug_assert!(
-            discriminant_bit_idx < branch.discriminant_bit_idx(),
-            "This leaf is not a descendant of the branch"
-        );
+        if let Some((word_idx, a, b)) = prefix_diff {
+            let prefix = leaf.key_hash.0[prefix_start_idx..word_idx].to_vec();
+
+            let diff = a ^ b;
+            let discriminant_bit_idx = diff.leading_zeros();
+        } else {
+            panic!("The keys are the same")
+        }
     }
 
+    #[allow(dead_code)]
     /// Create a new branch.
     ///
     /// prefix_start_idx is the index of the prior branch if the prior branch has trailing bits.
     ///
     /// # Panics
     /// Panics if the keys are the same.
-    pub fn from_hashed_key_bits(
+    fn from_hashed_key_bits(
         prefix_start_idx: usize,
         a_leaf: Box<Leaf<V>>,
         b_leaf: Box<Leaf<V>>,
@@ -115,49 +145,28 @@ impl<V> Branch<NodeRef<V>> {
         let prefix = a_leaf.key_hash.0[prefix_start_idx..word_idx].to_vec();
         debug_assert_eq!(prefix, b_leaf.key_hash.0[prefix_start_idx..word_idx]);
 
-        let diff = a ^ b;
-        let discriminant_bit_idx = diff.leading_zeros();
-        let discriminant_bit_mask = 1 << discriminant_bit_idx;
+        let masks = BranchMasks::new(a, b);
 
-        let trailing_bits_idx = (diff ^ discriminant_bit_mask).leading_zeros();
-        let not_trailing_bits_mask = (1 << trailing_bits_idx) - 1;
+        let (left, right) = if masks.is_left_descendant(a) {
+            debug_assert!(!masks.is_right_descendant(a));
 
-        let prefix_discriminant_suffix = (a & not_trailing_bits_mask) | discriminant_bit_mask;
-
-        let trailing_bits_mask = !not_trailing_bits_mask;
-
-        let discriminant_trailing_bits_mask = trailing_bits_mask | discriminant_bit_mask;
-
-        let branch = Branch {
-            bit_idx: 0,
-            prefix_discriminant_suffix,
-            discriminant_trailing_bits_mask,
-            left: (),
-            right: (),
-            prefix: Vec::new(),
-        };
-
-        let (left, right) = if branch.is_left_descendant(a) {
-            debug_assert!(!branch.is_right_descendant(a));
-
-            debug_assert!(branch.is_right_descendant(b));
-            debug_assert!(!branch.is_left_descendant(b));
+            debug_assert!(masks.is_right_descendant(b));
+            debug_assert!(!masks.is_left_descendant(b));
 
             (a_leaf, b_leaf)
         } else {
-            debug_assert!(branch.is_right_descendant(a));
-            debug_assert!(!branch.is_left_descendant(a));
+            debug_assert!(masks.is_right_descendant(a));
+            debug_assert!(!masks.is_left_descendant(a));
 
-            debug_assert!(branch.is_left_descendant(b));
-            debug_assert!(!branch.is_right_descendant(b));
+            debug_assert!(masks.is_left_descendant(b));
+            debug_assert!(!masks.is_right_descendant(b));
 
             (b_leaf, a_leaf)
         };
 
         Branch {
             bit_idx: 0,
-            prefix_discriminant_suffix,
-            discriminant_trailing_bits_mask,
+            masks,
             left: NodeRef::ModLeaf(left),
             right: NodeRef::ModLeaf(right),
             prefix,
@@ -221,16 +230,16 @@ impl<S: Store<V>, V> Transaction<S, V> {
 
                     let hash_segment = key_hash.0[word_idx];
 
-                    let next = if branch.is_right_descendant(hash_segment) {
+                    let next = if branch.masks.is_right_descendant(hash_segment) {
                         &branch.right
-                    } else if branch.is_left_descendant(hash_segment) {
+                    } else if branch.masks.is_left_descendant(hash_segment) {
                         &branch.left
                     } else {
                         return Ok(None);
                     };
 
                     // advance to the next word if this one is fully matched
-                    if branch.no_trailing_bits() {
+                    if branch.masks.no_trailing_bits() {
                         word_idx += 1;
                     } else {
                         return Ok(None);
@@ -277,16 +286,16 @@ impl<S: Store<V>, V> Transaction<S, V> {
 
                     let hash_segment = key_hash.0[word_idx];
 
-                    stored_idx = if branch.is_right_descendant(hash_segment) {
+                    stored_idx = if branch.masks.is_right_descendant(hash_segment) {
                         branch.right
-                    } else if branch.is_left_descendant(hash_segment) {
+                    } else if branch.masks.is_left_descendant(hash_segment) {
                         branch.left
                     } else {
                         return Ok(None);
                     };
 
                     // advance to the next word if this one is matched
-                    if branch.no_trailing_bits() {
+                    if branch.masks.no_trailing_bits() {
                         word_idx += 1
                     } else {
                         return Ok(None);
@@ -358,15 +367,15 @@ impl<S: Store<V>, V> Transaction<S, V> {
             let hash_segment = key_hash.0[word_idx];
 
             // advance to the next word if this one is matched
-            if branch.no_trailing_bits() {
+            if branch.masks.no_trailing_bits() {
                 word_idx += 1
             } else {
                 return Ok(());
             }
 
-            let next = if branch.is_right_descendant(hash_segment) {
+            let next = if branch.masks.is_right_descendant(hash_segment) {
                 &mut branch.right
-            } else if branch.is_left_descendant(hash_segment) {
+            } else if branch.masks.is_left_descendant(hash_segment) {
                 &mut branch.left
             } else {
                 todo!()
@@ -388,9 +397,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
                                 left: NodeRef::Stored(new_branch.left),
                                 right: NodeRef::Stored(new_branch.right),
                                 bit_idx: new_branch.bit_idx,
-                                prefix_discriminant_suffix: new_branch.prefix_discriminant_suffix,
-                                discriminant_trailing_bits_mask: new_branch
-                                    .discriminant_trailing_bits_mask,
+                                masks: new_branch.masks,
                                 // TODO remove the clone
                                 // Maybe use a AsRef<[u32]> instead of Vec<u32>
                                 prefix: new_branch.prefix.clone(),
