@@ -12,6 +12,7 @@ use std::{iter, mem};
 
 use alloc::{boxed::Box, string::String, vec::Vec};
 pub use modified::*;
+use stored::Node;
 pub use stored::Store;
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -81,6 +82,7 @@ impl BranchMask {
         (1 << (self.relative_bit_idx() + 1)) - 1
     }
 
+    #[allow(dead_code)]
     #[inline(always)]
     fn trailing_bits_mask(&self) -> u32 {
         u32::MAX << (self.relative_bit_idx() + 1)
@@ -104,11 +106,11 @@ pub struct Branch<NR> {
 /// I'm counting on the compiler to optimize this out when matched immediately.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum KeyPosition {
-    InRight,
-    InLeft,
-    InPriorWord,
-    InPrefixWord,
-    InPrefixVec {
+    Right,
+    Left,
+    PriorWord,
+    PrefixWord,
+    PrefixVec {
         word_idx: usize,
         branch_word: u32,
         key_word: u32,
@@ -128,7 +130,7 @@ impl<NR> Branch<NR> {
             .find(|(_, (branch_word, key_word))| branch_word != key_word);
 
         if let Some((idx, (branch_word, key_word))) = prefix_diff {
-            return KeyPosition::InPrefixVec {
+            return KeyPosition::PrefixVec {
                 word_idx: idx + prefix_offset,
                 branch_word: *branch_word,
                 key_word: *key_word,
@@ -139,17 +141,17 @@ impl<NR> Branch<NR> {
         let prior_word = key_hash.0.get(prior_word_idx).unwrap_or(&0);
 
         if self.prior_word != *prior_word {
-            return KeyPosition::InPriorWord;
+            return KeyPosition::PriorWord;
         }
 
         let hash_segment = key_hash.0[word_idx];
 
         if self.mask.is_left_descendant(hash_segment) {
-            KeyPosition::InLeft
+            KeyPosition::Left
         } else if self.mask.is_right_descendant(hash_segment) {
-            KeyPosition::InRight
+            KeyPosition::Right
         } else {
-            KeyPosition::InPrefixWord
+            KeyPosition::PrefixWord
         }
     }
 }
@@ -159,9 +161,9 @@ impl<V> Branch<NodeRef<V>> {
     fn new_at_branch(
         word_idx: usize,
         branch_word_or_prefix: u32,
-        mut branch: Box<Self>,
+        branch: &mut Box<Self>,
         leaf: Box<Leaf<V>>,
-    ) -> Self {
+    ) {
         debug_assert!(word_idx < 8);
 
         let leaf_word = leaf.key_hash.0[word_idx];
@@ -213,24 +215,28 @@ impl<V> Branch<NodeRef<V>> {
             prefix
         };
 
-        let (left, right) = if mask.is_left_descendant(leaf_word) {
+        let new_parent = Box::new(Branch {
+            left: NodeRef::Stored(0),
+            right: NodeRef::Stored(0),
+            mask,
+            prior_word,
+            prefix,
+        });
+
+        let old_branch = mem::replace(branch, new_parent);
+
+        if mask.is_left_descendant(leaf_word) {
             debug_assert!(!mask.is_right_descendant(leaf_word));
 
-            (NodeRef::ModLeaf(leaf), NodeRef::ModBranch(branch))
+            branch.left = NodeRef::ModLeaf(leaf);
+            branch.right = NodeRef::ModBranch(old_branch);
         } else {
             debug_assert!(mask.is_right_descendant(leaf_word));
             debug_assert!(!mask.is_left_descendant(leaf_word));
 
-            (NodeRef::ModBranch(branch), NodeRef::ModLeaf(leaf))
+            branch.left = NodeRef::ModBranch(old_branch);
+            branch.right = NodeRef::ModLeaf(leaf);
         };
-
-        Branch {
-            left,
-            right,
-            mask,
-            prior_word,
-            prefix,
-        }
     }
 
     #[allow(dead_code)]
@@ -238,8 +244,12 @@ impl<V> Branch<NodeRef<V>> {
     ///
     /// # Panics
     /// Panics if the keys are the same.
-    fn new_from_leafs(prefix_start_idx: usize, a_leaf: Box<Leaf<V>>, b_leaf: Box<Leaf<V>>) -> Self {
-        let Some((word_idx, (a, b))) = iter::zip(a_leaf.key_hash.0, b_leaf.key_hash.0)
+    fn new_from_leafs(
+        prefix_start_idx: usize,
+        old_leaf: impl AsRef<Leaf<V>> + Into<NodeRef<V>>,
+        new_leaf: Box<Leaf<V>>,
+    ) -> Box<Self> {
+        let Some((word_idx, (a, b))) = iter::zip(new_leaf.key_hash.0, old_leaf.as_ref().key_hash.0)
             .skip(prefix_start_idx)
             .enumerate()
             .find(|(_, (a, b))| a != b)
@@ -247,18 +257,18 @@ impl<V> Branch<NodeRef<V>> {
             panic!("The keys are the same")
         };
 
-        debug_assert!(a_leaf.key_hash.0[..word_idx] == b_leaf.key_hash.0[..word_idx]);
+        debug_assert!(new_leaf.key_hash.0[..word_idx] == old_leaf.as_ref().key_hash.0[..word_idx]);
 
-        let prefix = a_leaf.key_hash.0[prefix_start_idx..word_idx - 1].to_vec();
+        let prefix = new_leaf.key_hash.0[prefix_start_idx..word_idx - 1].to_vec();
         let prior_word = if word_idx == 0 {
             0
         } else {
             debug_assert_eq!(
-                a_leaf.key_hash.0[word_idx - 1],
-                b_leaf.key_hash.0[word_idx - 1]
+                new_leaf.key_hash.0[word_idx - 1],
+                old_leaf.as_ref().key_hash.0[word_idx - 1]
             );
 
-            a_leaf.key_hash.0[word_idx - 1]
+            new_leaf.key_hash.0[word_idx - 1]
         };
 
         let mask = BranchMask::new(word_idx as u32, a, b);
@@ -269,7 +279,7 @@ impl<V> Branch<NodeRef<V>> {
             debug_assert!(mask.is_right_descendant(b));
             debug_assert!(!mask.is_left_descendant(b));
 
-            (a_leaf, b_leaf)
+            (new_leaf.into(), old_leaf.into())
         } else {
             debug_assert!(mask.is_right_descendant(a));
             debug_assert!(!mask.is_left_descendant(a));
@@ -277,16 +287,16 @@ impl<V> Branch<NodeRef<V>> {
             debug_assert!(mask.is_left_descendant(b));
             debug_assert!(!mask.is_right_descendant(b));
 
-            (b_leaf, a_leaf)
+            (old_leaf.into(), new_leaf.into())
         };
 
-        Branch {
-            left: NodeRef::ModLeaf(left),
-            right: NodeRef::ModLeaf(right),
+        Box::new(Branch {
+            left,
+            right,
             mask,
             prior_word,
             prefix,
-        }
+        })
     }
 }
 
@@ -332,11 +342,11 @@ impl<S: Store<V>, V> Transaction<S, V> {
             match node_ref {
                 // TODO check that the KeyPosition is optimized out.
                 NodeRef::ModBranch(branch) => match branch.desend(key_hash) {
-                    KeyPosition::InLeft => node_ref = &branch.left,
-                    KeyPosition::InRight => node_ref = &branch.right,
-                    KeyPosition::InPriorWord
-                    | KeyPosition::InPrefixWord
-                    | KeyPosition::InPrefixVec { .. } => return Ok(None),
+                    KeyPosition::Left => node_ref = &branch.left,
+                    KeyPosition::Right => node_ref = &branch.right,
+                    KeyPosition::PriorWord
+                    | KeyPosition::PrefixWord
+                    | KeyPosition::PrefixVec { .. } => return Ok(None),
                 },
                 NodeRef::ModLeaf(leaf) => {
                     if leaf.key_hash == *key_hash {
@@ -357,7 +367,31 @@ impl<S: Store<V>, V> Transaction<S, V> {
         mut stored_idx: stored::Idx,
         key_hash: &KeyHash,
     ) -> Result<Option<&'s V>, String> {
-        todo!()
+        loop {
+            let node = data_store.get_node(stored_idx).map_err(|e| e.into())?;
+            match node {
+                // TODO check that the KeyPosition is optimized out.
+                Node::Branch(branch) => match branch.desend(key_hash) {
+                    KeyPosition::Left => stored_idx = branch.left,
+                    KeyPosition::Right => stored_idx = branch.right,
+                    KeyPosition::PriorWord
+                    | KeyPosition::PrefixWord
+                    | KeyPosition::PrefixVec { .. } => return Ok(None),
+                },
+                Node::Leaf(leaf) => {
+                    if leaf.key_hash == *key_hash {
+                        break;
+                    } else {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+
+        match data_store.get_node(stored_idx).map_err(|e| e.into())? {
+            Node::Leaf(leaf) => Ok(Some(&leaf.value)),
+            _ => unreachable!("Prior loop only breaks on a leaf"),
+        }
     }
 
     pub fn insert(&mut self, key_hash: &KeyHash, value: V) -> Result<(), String> {
@@ -381,60 +415,58 @@ impl<S: Store<V>, V> Transaction<S, V> {
         key_hash: &KeyHash,
         value: V,
     ) -> Result<(), String> {
-        let mut prior_branch = None;
-        let mut node_ref = root;
-
-        loop {
-            match node_ref {
-                // TODO check that the KeyPosition is optimized out.
-                NodeRef::ModBranch(branch) => match branch.desend(key_hash) {
-                    KeyPosition::InLeft => {
-                        prior_branch = Some(branch);
-                        // node_ref = &mut branch.left;
-                    }
-                    KeyPosition::InRight => {
-                        prior_branch = Some(branch);
-                        // node_ref = &mut branch.right;
-                    }
-                    KeyPosition::InPriorWord => {
-                        todo!()
-                    }
-                    KeyPosition::InPrefixWord => {
-                        todo!()
-                    }
-                    KeyPosition::InPrefixVec { .. } => {
-                        todo!()
-                    }
-                },
-                NodeRef::ModLeaf(leaf) => {
-                    if leaf.key_hash == *key_hash {
-                        todo!()
-                    } else {
-                        todo!()
-                    }
+        match root {
+            NodeRef::ModBranch(branch) => {
+                Self::insert_below_branch(data_store, branch, key_hash, value)
+            }
+            NodeRef::ModLeaf(leaf) => {
+                if leaf.key_hash == *key_hash {
+                    leaf.value = value;
+                    Ok(())
+                } else {
+                    let old_leaf = mem::replace(root, NodeRef::Stored(0));
+                    let NodeRef::ModLeaf(old_leaf) = old_leaf else {
+                        unreachable!("We just matched a ModLeaf");
+                    };
+                    *root = NodeRef::ModBranch(Branch::new_from_leafs(
+                        0,
+                        old_leaf,
+                        Box::new(Leaf {
+                            key_hash: *key_hash,
+                            value,
+                        }),
+                    ));
+                    Ok(())
                 }
-                NodeRef::Stored(stored_idx) => {
-                    {
-                        let new_node = data_store.get_node(*stored_idx).map_err(|e| e.into())?;
-                        // match new_node {
-                        //     stored::Node::Branch(new_branch) => {
-                        //         *next = NodeRef::ModBranch(Box::new(Branch {
-                        //             left: NodeRef::Stored(new_branch.left),
-                        //             right: NodeRef::Stored(new_branch.right),
-                        //             bit_idx: new_branch.bit_idx,
-                        //             mask: new_branch.mask,
-                        //             // TODO remove the clone
-                        //             // Maybe use a AsRef<[u32]> instead of Vec<u32>
-                        //             prefix: new_branch.prefix.clone(),
-                        //         }));
+            }
+            NodeRef::Stored(stored_idx) => {
+                let new_node = data_store.get_node(*stored_idx).map_err(|e| e.into())?;
+                match new_node {
+                    stored::Node::Branch(new_branch) => {
+                        *root = NodeRef::ModBranch(Box::new(Branch {
+                            left: NodeRef::Stored(new_branch.left),
+                            right: NodeRef::Stored(new_branch.right),
+                            mask: new_branch.mask,
+                            prior_word: new_branch.prior_word,
+                            prefix: new_branch.prefix.clone(),
+                        }));
 
-                        //         branch = next_branch;
-                        //     }
-                        //     stored::Node::Leaf(leaf) => {
-                        //         todo!()
-                        //     }
-                        // }
-                        todo!()
+                        let NodeRef::ModBranch(branch) = root else {
+                            unreachable!("We just set root to a ModBranch");
+                        };
+
+                        Self::insert_below_branch(data_store, branch, key_hash, value)
+                    }
+                    stored::Node::Leaf(leaf) => {
+                        *root = NodeRef::ModBranch(Branch::new_from_leafs(
+                            0,
+                            StoredLeafRef::new(leaf, *stored_idx),
+                            Box::new(Leaf {
+                                key_hash: *key_hash,
+                                value,
+                            }),
+                        ));
+                        Ok(())
                     }
                 }
             }
@@ -449,21 +481,50 @@ impl<S: Store<V>, V> Transaction<S, V> {
     ) -> Result<(), String> {
         loop {
             let next = match branch.desend(key_hash) {
-                KeyPosition::InLeft => &mut branch.left,
-                KeyPosition::InRight => &mut branch.right,
-                KeyPosition::InPrefixWord => {
-                    todo!()
-                }
-                KeyPosition::InPriorWord => {
-                    let new_leaf = Box::new(Leaf {
-                        key_hash: *key_hash,
-                        value,
-                    });
+                KeyPosition::Left => &mut branch.left,
+                KeyPosition::Right => &mut branch.right,
+                KeyPosition::PrefixWord => {
+                    Branch::new_at_branch(
+                        branch.mask.word_idx(),
+                        branch.mask.left_prefix,
+                        branch,
+                        Box::new(Leaf {
+                            key_hash: *key_hash,
+                            value,
+                        }),
+                    );
 
-                    todo!()
+                    return Ok(());
                 }
-                KeyPosition::InPrefixVec { .. } => {
-                    todo!()
+                KeyPosition::PriorWord => {
+                    Branch::new_at_branch(
+                        branch.mask.word_idx() - 1,
+                        branch.prior_word,
+                        branch,
+                        Box::new(Leaf {
+                            key_hash: *key_hash,
+                            value,
+                        }),
+                    );
+
+                    return Ok(());
+                }
+                KeyPosition::PrefixVec {
+                    word_idx,
+                    branch_word,
+                    key_word: _,
+                } => {
+                    Branch::new_at_branch(
+                        word_idx,
+                        branch_word,
+                        branch,
+                        Box::new(Leaf {
+                            key_hash: *key_hash,
+                            value,
+                        }),
+                    );
+
+                    return Ok(());
                 }
             };
 
@@ -471,8 +532,22 @@ impl<S: Store<V>, V> Transaction<S, V> {
                 NodeRef::ModBranch(next_branch) => {
                     branch = next_branch;
                 }
-                NodeRef::ModLeaf(leaf) => {
-                    todo!()
+                NodeRef::ModLeaf(_) => {
+                    let old_next = mem::replace(next, NodeRef::Stored(0));
+                    let NodeRef::ModLeaf(leaf) = old_next else {
+                        unreachable!("We just matched a ModLeaf");
+                    };
+
+                    *next = NodeRef::ModBranch(Branch::new_from_leafs(
+                        branch.mask.word_idx() - 1,
+                        leaf,
+                        Box::new(Leaf {
+                            key_hash: *key_hash,
+                            value,
+                        }),
+                    ));
+
+                    return Ok(());
                 }
                 NodeRef::Stored(stored_idx) => {
                     // TODO this is an artificial load of leaf.value.
@@ -496,7 +571,15 @@ impl<S: Store<V>, V> Transaction<S, V> {
                             branch = next_branch;
                         }
                         stored::Node::Leaf(leaf) => {
-                            todo!()
+                            *next = NodeRef::ModBranch(Branch::new_from_leafs(
+                                branch.mask.word_idx() - 1,
+                                StoredLeafRef::new(leaf, *stored_idx),
+                                Box::new(Leaf {
+                                    key_hash: *key_hash,
+                                    value,
+                                }),
+                            ));
+                            return Ok(());
                         }
                     }
                 }
