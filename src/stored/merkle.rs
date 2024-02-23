@@ -22,15 +22,15 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
     }
 
     /// Always check that the snapshot is of the merkle tree you expect.
-    fn calc_root_hash(&self) -> Result<NodeHash, String> {
+    pub fn calc_root_hash(&self) -> Result<NodeHash, String> {
         if self.branches.is_empty() {
             if self.leaves.is_empty() {
-                return Ok([0; 32]);
+                Ok([0; 32])
             } else {
                 if self.leaves.len() != 1 {
                     return Err("Invalid snapshot".into());
                 }
-                return Ok(self.leaves[0].hash_node());
+                Ok(self.leaves[0].hash_node())
             }
         } else {
             if self.leaves.is_empty() {

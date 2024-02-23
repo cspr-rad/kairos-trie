@@ -393,14 +393,14 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
     }
 
     /// TODO a version of this that writes to the database.
-    fn calc_root_hash(&self) -> Result<NodeHash, String> {
-        let mut on_modified_leaf = |_, _| {};
-        let mut on_modified_branch = |_, _| {};
+    pub fn calc_root_hash(&self) -> Result<NodeHash, String> {
+        let mut on_modified_leaf = |_: &_, _: &_| {};
+        let mut on_modified_branch = |_: &_, _: &_| {};
 
         let root_hash = match &self.current_root {
             TrieRoot::Empty => return Ok([0; 32]),
             TrieRoot::Node(node_ref) => Self::calc_root_hash_node(
-                &mut self.data_store,
+                &self.data_store,
                 node_ref,
                 &mut on_modified_leaf,
                 &mut on_modified_branch,
@@ -412,7 +412,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
 
     /// TODO use this to store nodes in the data base
     fn calc_root_hash_node(
-        data_store: &mut S,
+        data_store: &S,
         node_ref: &NodeRef<V>,
         on_modified_leaf: &mut impl FnMut(&NodeHash, &Leaf<V>),
         on_modified_branch: &mut impl FnMut(&NodeHash, &Branch<NodeRef<V>>),
