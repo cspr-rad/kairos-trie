@@ -12,11 +12,52 @@ use std::{iter, mem};
 
 use alloc::{boxed::Box, string::String, vec::Vec};
 pub use modified::*;
-use stored::Node;
+use sha2::{Digest, Sha256};
 pub use stored::Store;
+use stored::{Node, NodeHash};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct KeyHash(pub [u32; 8]);
+
+impl KeyHash {
+    pub fn from_bytes(hash_key: &[u8; 32]) -> Self {
+        let mut r = [0; 8];
+
+        hash_key
+            .chunks_exact(4)
+            .enumerate()
+            .for_each(|(i, chunk)| r[i] = u32::from_le_bytes(chunk.try_into().unwrap()));
+
+        Self(r)
+    }
+
+    pub fn to_bytes(&self) -> [u8; 32] {
+        let mut r = [0; 32];
+
+        self.0.iter().enumerate().for_each(|(i, &word)| {
+            let [a, b, c, d] = word.to_le_bytes();
+            let offset = i * 4;
+            r[offset] = a;
+            r[offset + 1] = b;
+            r[offset + 2] = c;
+            r[offset + 3] = d;
+        });
+
+        r
+    }
+}
+
+impl From<&[u8; 32]> for KeyHash {
+    fn from(hash_key: &[u8; 32]) -> Self {
+        Self::from_bytes(hash_key)
+    }
+}
+
+impl From<&KeyHash> for [u8; 32] {
+    fn from(hash: &KeyHash) -> [u8; 32] {
+        hash.to_bytes()
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 struct BranchMask {
@@ -153,6 +194,22 @@ impl<NR> Branch<NR> {
         } else {
             KeyPosition::PrefixWord
         }
+    }
+
+    pub fn branch_hash(&self, left: &NodeHash, right: &NodeHash) -> NodeHash {
+        let mut hasher = Sha256::new();
+
+        hasher.update(left);
+        hasher.update(right);
+        hasher.update(self.mask.bit_idx.to_le_bytes());
+        hasher.update(self.mask.left_prefix.to_le_bytes());
+        hasher.update(self.prior_word.to_le_bytes());
+
+        self.prefix
+            .iter()
+            .for_each(|word| hasher.update(word.to_le_bytes()));
+
+        hasher.finalize().into()
     }
 }
 
@@ -299,10 +356,20 @@ impl<V> Branch<NodeRef<V>> {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Leaf<V> {
     pub key_hash: KeyHash,
     pub value: V,
+}
+
+impl<V: AsRef<[u8]>> Leaf<V> {
+    pub fn hash_node(&self) -> NodeHash {
+        let mut hasher = Sha256::new();
+        hasher.update(self.key_hash.to_bytes());
+        hasher.update(self.value.as_ref());
+        let hash: NodeHash = hasher.finalize().into();
+        hash
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
@@ -317,11 +384,72 @@ pub struct Transaction<S: Store<V>, V> {
     pub current_root: TrieRoot<V>,
 }
 
-impl<S: Store<V>, V> Transaction<S, V> {
+impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
     pub fn new(root: TrieRoot<V>, data_store: S) -> Self {
         Transaction {
             current_root: root,
             data_store,
+        }
+    }
+
+    /// TODO a version of this that writes to the database.
+    fn calc_root_hash(&self) -> Result<NodeHash, String> {
+        let mut on_modified_leaf = |_, _| {};
+        let mut on_modified_branch = |_, _| {};
+
+        let root_hash = match &self.current_root {
+            TrieRoot::Empty => return Ok([0; 32]),
+            TrieRoot::Node(node_ref) => Self::calc_root_hash_node(
+                &mut self.data_store,
+                node_ref,
+                &mut on_modified_leaf,
+                &mut on_modified_branch,
+            )?,
+        };
+
+        Ok(root_hash)
+    }
+
+    /// TODO use this to store nodes in the data base
+    fn calc_root_hash_node(
+        data_store: &mut S,
+        node_ref: &NodeRef<V>,
+        on_modified_leaf: &mut impl FnMut(&NodeHash, &Leaf<V>),
+        on_modified_branch: &mut impl FnMut(&NodeHash, &Branch<NodeRef<V>>),
+    ) -> Result<NodeHash, String> {
+        // TODO use a stack instead of recursion
+        match node_ref {
+            NodeRef::ModBranch(branch) => {
+                let left = Self::calc_root_hash_node(
+                    data_store,
+                    &branch.left,
+                    on_modified_leaf,
+                    on_modified_branch,
+                )?;
+                let right = Self::calc_root_hash_node(
+                    data_store,
+                    &branch.right,
+                    on_modified_leaf,
+                    on_modified_branch,
+                )?;
+
+                let hash = branch.branch_hash(&left, &right);
+                on_modified_branch(&hash, branch);
+                Ok(hash)
+            }
+            NodeRef::ModLeaf(leaf) => {
+                let hash = leaf.hash_node();
+
+                on_modified_leaf(&hash, leaf);
+                Ok(hash)
+            }
+            NodeRef::Stored(stored_idx) => {
+                let hash = data_store
+                    .get_unvisted_hash(*stored_idx)
+                    .copied()
+                    .map_err(|e| e.into())?;
+                Ok(hash)
+            }
         }
     }
 

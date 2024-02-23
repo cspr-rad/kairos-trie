@@ -8,8 +8,14 @@ use crate::{Branch, Leaf};
 
 pub type Idx = u32;
 
+pub trait WriteStore<V> {
+    type Error: Into<String> + Debug;
+
+    fn set_node(&mut self, node: Node<&Branch<Idx>, &Leaf<V>>) -> Result<Idx, Self::Error>;
+}
+
 pub trait Store<V> {
-    type Error: Into<String>;
+    type Error: Into<String> + Debug;
 
     /// Must return a hash of a node that has not been visited.
     /// May return a hash of a node that has already been visited.
@@ -19,7 +25,7 @@ pub trait Store<V> {
 }
 
 pub trait Database<V> {
-    type Error: Into<String>;
+    type Error: Into<String> + Debug;
 
     fn get(&self, hash: &NodeHash) -> Result<Node<Branch<NodeHash>, Leaf<V>>, Self::Error>;
 }
@@ -30,6 +36,7 @@ pub enum Node<B, L> {
     Leaf(L),
 }
 
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Error {
     NodeNotFound,
 }

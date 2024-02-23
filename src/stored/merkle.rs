@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, vec::Vec};
+use alloc::{boxed::Box, string::String, vec::Vec};
 use bumpalo::Bump;
 use ouroboros::self_referencing;
 
@@ -10,19 +10,40 @@ pub struct Snapshot<V> {
     branches: Box<[Branch<Idx>]>,
     leaves: Box<[Leaf<V>]>,
 
-    // Unvisited we only store the hash of.
+    // we only store the hashes of the nodes that have not been visited.
     nodes: Box<[NodeHash]>,
 }
 
-impl<V> Snapshot<V> {
+impl<V: AsRef<[u8]>> Snapshot<V> {
     fn get_unvisted_hash(&self, idx: Idx) -> Option<&NodeHash> {
         let idx = idx as usize - self.branches.len() - self.leaves.len();
 
         self.nodes.get(idx)
     }
+
+    /// Always check that the snapshot is of the merkle tree you expect.
+    fn calc_root_hash(&self) -> Result<NodeHash, String> {
+        if self.branches.is_empty() {
+            if self.leaves.is_empty() {
+                return Ok([0; 32]);
+            } else {
+                if self.leaves.len() != 1 {
+                    return Err("Invalid snapshot".into());
+                }
+                return Ok(self.leaves[0].hash_node());
+            }
+        } else {
+            if self.leaves.is_empty() {
+                return Err("Invalid snapshot".into());
+            }
+
+            let _root = &self.branches[0];
+            todo!("calc the root hash starting from the root branch at index 0");
+        }
+    }
 }
 
-impl<V> Store<V> for Snapshot<V> {
+impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
     type Error = Error;
 
     fn get_unvisted_hash(&self, idx: Idx) -> Result<&NodeHash, Self::Error> {
