@@ -44,7 +44,7 @@ impl From<Error> for String {
 
 pub type NodeHash = [u8; 32];
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct MemoryDb<V> {
     leaves: BTreeMap<NodeHash, Node<Branch<NodeHash>, Leaf<V>>>,
 }

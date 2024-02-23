@@ -89,7 +89,7 @@ impl BranchMask {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Branch<NR> {
     pub left: NR,
     pub right: NR,
@@ -239,7 +239,6 @@ impl<V> Branch<NodeRef<V>> {
         };
     }
 
-    #[allow(dead_code)]
     /// Create a new branch above two leafs.
     ///
     /// # Panics
@@ -306,7 +305,7 @@ pub struct Leaf<V> {
     pub value: V,
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Default)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub enum TrieRoot<V> {
     #[default]
     Empty,
