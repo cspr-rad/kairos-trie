@@ -14,6 +14,7 @@
   };
   outputs = inputs@{ self, nixpkgs, nci, parts, fmt }:
     parts.lib.mkFlake { inherit inputs; } {
+      flake.herculesCI.ciSystems = [ "x86_64-linux" ];
       systems = [ "x86_64-linux" "aarch64-darwin" ];
       imports = [
         nci.flakeModule
