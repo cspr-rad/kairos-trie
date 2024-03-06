@@ -285,17 +285,6 @@ impl<V: Debug> Branch<NodeRef<V>> {
 
         let prefix = if word_idx == branch.mask.word_idx() {
             debug_assert_eq!(prior_word, branch.prior_word);
-            if branch.prior_word != prior_word {
-                dbg!(
-                    word_idx,
-                    branch.mask.word_idx(),
-                    branch.prior_word,
-                    prior_word
-                );
-                dbg!(branch.prefix.len());
-                dbg!(&branch.prefix);
-                dbg!(&leaf.key_hash.0);
-            }
             mem::take(&mut branch.prefix)
         } else if word_idx == branch.mask.word_idx() - 1 {
             mem::take(&mut branch.prefix)
@@ -386,29 +375,6 @@ impl<V: Debug> Branch<NodeRef<V>> {
 
             (new_leaf.into(), old_leaf.into())
         } else {
-            if !mask.is_right_descendant(a) {
-                eprintln!("mask.left_prefix : {:032b}", mask.left_prefix);
-                eprintln!("mask.bit_idx: {}", mask.bit_idx);
-                eprintln!("mask.right_prefix: {:032b}", mask.right_prefix());
-                eprintln!("1: {:032b}", 1);
-
-                eprintln!(
-                    "mask.prefix_discriminant_mask: {:032b}",
-                    mask.prefix_discriminant_mask()
-                );
-                eprintln!(
-                    "1 << (self.relative_bit_idx() + 1): {:032b}",
-                    1 << (mask.relative_bit_idx() + 1)
-                );
-                eprintln!("self.relative_bit_idx: {}", mask.relative_bit_idx());
-                eprintln!("a: {:032b}", a);
-                eprintln!("b: {:032b}", b);
-                eprintln!("word_idx: {}", word_idx);
-                eprintln!("prefix_start_idx: {}", prefix_start_idx);
-                eprintln!("old_leaf: {:?}", old_leaf.as_ref());
-                eprintln!("new_leaf: {:?}", new_leaf);
-            }
-
             debug_assert!(mask.is_right_descendant(a));
             debug_assert!(!mask.is_left_descendant(a));
 
