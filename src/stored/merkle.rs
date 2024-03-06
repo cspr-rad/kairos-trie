@@ -1,6 +1,5 @@
 use alloc::{boxed::Box, string::String, vec::Vec};
 use bumpalo::Bump;
-use ouroboros::self_referencing;
 
 use crate::{Branch, Leaf};
 
@@ -65,69 +64,69 @@ impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
     }
 }
 
-// Maybe just use Box with nightly Allocator parameter.
-#[self_referencing]
-pub struct SnapshotBuilder<Db: 'static, V: 'static> {
+pub struct SnapshotBuilder<'a, Db, V> {
     db: Db,
-    bump: Bump,
+    bump: &'a Bump,
 
-    #[borrows(bump)]
-    #[covariant]
-    nodes: Vec<&'this NodeHashMaybeNode<'this, V>>,
+    nodes: Vec<&'a NodeHashMaybeNode<'a, V>>,
 }
 
 type NodeHashMaybeNode<'a, V> = (NodeHash, Option<Node<&'a Branch<Idx>, &'a Leaf<V>>>);
 
-impl<Db: 'static + Database<V>, V: 'static> Store<V> for SnapshotBuilder<Db, V> {
+impl<'a, Db: Database<V>, V> Store<V> for SnapshotBuilder<'a, Db, V> {
     type Error = Error;
 
     fn get_unvisted_hash(&self, hash_idx: Idx) -> Result<&NodeHash, Self::Error> {
         let hash_idx = hash_idx as usize;
 
-        self.with_nodes(|nodes| {
-            nodes
-                .get(hash_idx)
-                .map(|(hash, _)| hash)
-                .ok_or(Error::NodeNotFound)
-        })
+        self.nodes
+            .get(hash_idx)
+            .map(|(hash, _)| hash)
+            .ok_or(Error::NodeNotFound)
     }
 
     fn get_node(&mut self, hash_idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>, Self::Error> {
         let hash_idx = hash_idx as usize;
 
-        self.with_mut(|this| {
-            let Some((hash, o_node)) = this
-                .nodes
-                .get(hash_idx)
-                .map(|(hash, o_node)| (hash, *o_node))
-            else {
-                return Err(Error::NodeNotFound);
-            };
+        let Some((hash, o_node)) = self
+            .nodes
+            .get(hash_idx)
+            .map(|(hash, o_node)| (hash, *o_node))
+        else {
+            return Err(Error::NodeNotFound);
+        };
 
-            if let Some(node) = o_node {
-                return Ok(node);
+        if let Some(node) = o_node {
+            return Ok(node);
+        }
+
+        let next_idx = self.nodes.len() as Idx;
+        let (node, left, right) = Self::get_from_db(self.bump, &self.db, hash, next_idx)?;
+
+        let mut add_unvisited = |hash: Option<NodeHash>| {
+            if let Some(hash) = hash {
+                self.nodes.push(self.bump.alloc((hash, None)))
             }
+        };
 
-            let next_idx = this.nodes.len() as Idx;
-            let (node, left, right) = Self::get_from_db(this.bump, this.db, hash, next_idx)?;
+        add_unvisited(left);
+        add_unvisited(right);
 
-            let mut add_unvisited = |hash: Option<NodeHash>| {
-                if let Some(hash) = hash {
-                    this.nodes.push(this.bump.alloc((hash, None)))
-                }
-            };
-
-            add_unvisited(left);
-            add_unvisited(right);
-
-            Ok(node)
-        })
+        Ok(node)
     }
 }
 
-impl<Db: 'static + Database<V>, V: 'static> SnapshotBuilder<Db, V> {
+impl<'a, Db: Database<V>, V> SnapshotBuilder<'a, Db, V> {
+    pub fn new_with_db(db: Db, bump: &'a Bump) -> Self {
+        Self {
+            db,
+            bump,
+            nodes: Vec::new(),
+        }
+    }
+
     #[inline(always)]
-    fn get_from_db<'a>(
+    fn get_from_db(
         bump: &'a Bump,
         db: &Db,
         hash: &NodeHash,

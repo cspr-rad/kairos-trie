@@ -56,6 +56,14 @@ pub struct MemoryDb<V> {
     leaves: BTreeMap<NodeHash, Node<Branch<NodeHash>, Leaf<V>>>,
 }
 
+impl<V> MemoryDb<V> {
+    pub fn empty() -> Self {
+        Self {
+            leaves: BTreeMap::new(),
+        }
+    }
+}
+
 impl<V: Clone> Database<V> for MemoryDb<V> {
     type Error = Error;
 

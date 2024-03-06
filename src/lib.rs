@@ -8,6 +8,7 @@ extern crate alloc;
 pub mod modified;
 pub mod stored;
 
+use core::fmt::Debug;
 use std::{iter, mem};
 
 use alloc::{boxed::Box, string::String, vec::Vec};
@@ -71,7 +72,7 @@ struct BranchMask {
 impl BranchMask {
     const fn new(word_idx: u32, a: u32, b: u32) -> Self {
         let diff = a ^ b;
-        let relative_bit_idx = diff.leading_zeros();
+        let relative_bit_idx = diff.trailing_zeros();
 
         let bit_idx = word_idx * 32 + relative_bit_idx;
 
@@ -109,7 +110,9 @@ impl BranchMask {
     /// The index of the discriminant bit in the `left_prefix`.
     #[inline(always)]
     fn relative_bit_idx(&self) -> u32 {
-        self.bit_idx % 32
+        let r = self.bit_idx % 32;
+        debug_assert!(r < 32);
+        r
     }
 
     #[inline(always)]
@@ -120,13 +123,52 @@ impl BranchMask {
     /// A mask containing 1s in the prefix and discriminant bit.
     #[inline(always)]
     fn prefix_discriminant_mask(&self) -> u32 {
-        (1 << (self.relative_bit_idx() + 1)) - 1
+        let relative_bit_idx = self.relative_bit_idx();
+        if relative_bit_idx == 31 {
+            u32::MAX
+        } else {
+            let r = (1 << (relative_bit_idx + 1)) - 1;
+            debug_assert_ne!(r, 0);
+            r
+        }
     }
 
     #[allow(dead_code)]
     #[inline(always)]
     fn trailing_bits_mask(&self) -> u32 {
         u32::MAX << (self.relative_bit_idx() + 1)
+    }
+}
+
+#[cfg(all(feature = "std", test))]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(1_000_000))]
+        #[test]
+        fn test_branch_mask(word_idx in 0u32..8, a: u32, b: u32) {
+            let mask = BranchMask::new(word_idx, a, b);
+
+            match (mask.is_left_descendant(a),
+                   mask.is_right_descendant(a),
+                   mask.is_left_descendant(b),
+                   mask.is_right_descendant(b)) {
+                (true, false, false, true) | (false, true, true, false) => (),
+                other => panic!("\n\
+                                mast.relative_bit_idx: {}\n\
+                                mask.left_prefix: {:032b}\n\
+                                a:                {:032b}\n\
+                                b:                {:032b}\n\
+                                (a.left, a.right, b.left, b.right): {:?}",
+                                mask.relative_bit_idx(),
+                                mask.left_prefix,
+                                a, b, other),
+
+            }
+        }
+
     }
 }
 
@@ -213,7 +255,7 @@ impl<NR> Branch<NR> {
     }
 }
 
-impl<V> Branch<NodeRef<V>> {
+impl<V: Debug> Branch<NodeRef<V>> {
     #[allow(dead_code)]
     fn new_at_branch(
         word_idx: usize,
@@ -232,7 +274,7 @@ impl<V> Branch<NodeRef<V>> {
         };
 
         let diff = branch_word_or_prefix ^ leaf_word;
-        let discriminant_bit_idx = diff.leading_zeros();
+        let discriminant_bit_idx = diff.trailing_zeros();
 
         let mask = BranchMask {
             bit_idx: word_idx as u32 * 32 + discriminant_bit_idx,
@@ -241,13 +283,19 @@ impl<V> Branch<NodeRef<V>> {
 
         debug_assert!(branch.mask.word_idx() >= word_idx);
 
-        debug_assert_eq!(
-            branch.prior_word,
-            leaf.key_hash.0[branch.mask.word_idx() - 1]
-        );
-
         let prefix = if word_idx == branch.mask.word_idx() {
             debug_assert_eq!(prior_word, branch.prior_word);
+            if branch.prior_word != prior_word {
+                dbg!(
+                    word_idx,
+                    branch.mask.word_idx(),
+                    branch.prior_word,
+                    prior_word
+                );
+                dbg!(branch.prefix.len());
+                dbg!(&branch.prefix);
+                dbg!(&leaf.key_hash.0);
+            }
             mem::take(&mut branch.prefix)
         } else if word_idx == branch.mask.word_idx() - 1 {
             mem::take(&mut branch.prefix)
@@ -306,8 +354,8 @@ impl<V> Branch<NodeRef<V>> {
         new_leaf: Box<Leaf<V>>,
     ) -> Box<Self> {
         let Some((word_idx, (a, b))) = iter::zip(new_leaf.key_hash.0, old_leaf.as_ref().key_hash.0)
-            .skip(prefix_start_idx)
             .enumerate()
+            .skip(prefix_start_idx)
             .find(|(_, (a, b))| a != b)
         else {
             panic!("The keys are the same")
@@ -315,16 +363,17 @@ impl<V> Branch<NodeRef<V>> {
 
         debug_assert!(new_leaf.key_hash.0[..word_idx] == old_leaf.as_ref().key_hash.0[..word_idx]);
 
-        let prefix = new_leaf.key_hash.0[prefix_start_idx..word_idx - 1].to_vec();
+        let prior_word_idx = word_idx.saturating_sub(1);
+        let prefix = new_leaf.key_hash.0[prefix_start_idx..prior_word_idx].to_vec();
         let prior_word = if word_idx == 0 {
             0
         } else {
             debug_assert_eq!(
-                new_leaf.key_hash.0[word_idx - 1],
-                old_leaf.as_ref().key_hash.0[word_idx - 1]
+                new_leaf.key_hash.0[prior_word_idx],
+                old_leaf.as_ref().key_hash.0[prior_word_idx]
             );
 
-            new_leaf.key_hash.0[word_idx - 1]
+            new_leaf.key_hash.0[prior_word_idx]
         };
 
         let mask = BranchMask::new(word_idx as u32, a, b);
@@ -337,6 +386,29 @@ impl<V> Branch<NodeRef<V>> {
 
             (new_leaf.into(), old_leaf.into())
         } else {
+            if !mask.is_right_descendant(a) {
+                eprintln!("mask.left_prefix : {:032b}", mask.left_prefix);
+                eprintln!("mask.bit_idx: {}", mask.bit_idx);
+                eprintln!("mask.right_prefix: {:032b}", mask.right_prefix());
+                eprintln!("1: {:032b}", 1);
+
+                eprintln!(
+                    "mask.prefix_discriminant_mask: {:032b}",
+                    mask.prefix_discriminant_mask()
+                );
+                eprintln!(
+                    "1 << (self.relative_bit_idx() + 1): {:032b}",
+                    1 << (mask.relative_bit_idx() + 1)
+                );
+                eprintln!("self.relative_bit_idx: {}", mask.relative_bit_idx());
+                eprintln!("a: {:032b}", a);
+                eprintln!("b: {:032b}", b);
+                eprintln!("word_idx: {}", word_idx);
+                eprintln!("prefix_start_idx: {}", prefix_start_idx);
+                eprintln!("old_leaf: {:?}", old_leaf.as_ref());
+                eprintln!("new_leaf: {:?}", new_leaf);
+            }
+
             debug_assert!(mask.is_right_descendant(a));
             debug_assert!(!mask.is_left_descendant(a));
 
@@ -384,7 +456,7 @@ pub struct Transaction<S: Store<V>, V> {
     pub current_root: TrieRoot<V>,
 }
 
-impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
+impl<S: Store<V>, V: Debug + AsRef<[u8]>> Transaction<S, V> {
     pub fn new(root: TrieRoot<V>, data_store: S) -> Self {
         Transaction {
             current_root: root,
@@ -666,7 +738,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                     };
 
                     *next = NodeRef::ModBranch(Branch::new_from_leafs(
-                        branch.mask.word_idx() - 1,
+                        branch.mask.word_idx().saturating_sub(1),
                         leaf,
                         Box::new(Leaf {
                             key_hash: *key_hash,
