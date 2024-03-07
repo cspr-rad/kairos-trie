@@ -6,7 +6,6 @@ use crate::{stored, Branch, Leaf};
 pub enum NodeRef<V> {
     ModBranch(Box<Branch<Self>>),
     ModLeaf(Box<Leaf<V>>),
-
     Stored(stored::Idx),
 }
 

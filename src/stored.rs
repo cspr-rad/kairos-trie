@@ -21,7 +21,7 @@ pub trait Store<V> {
     /// May return a hash of a node that has already been visited.
     fn get_unvisted_hash(&self, hash_idx: Idx) -> Result<&NodeHash, Self::Error>;
 
-    fn get_node(&mut self, hash_idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>, Self::Error>;
+    fn get_node(&self, hash_idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>, Self::Error>;
 }
 
 pub trait Database<V> {

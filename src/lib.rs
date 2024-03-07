@@ -202,7 +202,7 @@ enum KeyPosition {
 
 impl<NR> Branch<NR> {
     #[inline(always)]
-    fn desend(&self, key_hash: &KeyHash) -> KeyPosition {
+    fn descend(&self, key_hash: &KeyHash) -> KeyPosition {
         let word_idx = self.mask.bit_idx as usize / 32;
         debug_assert!(word_idx < 8);
 
@@ -256,7 +256,6 @@ impl<NR> Branch<NR> {
 }
 
 impl<V: Debug> Branch<NodeRef<V>> {
-    #[allow(dead_code)]
     fn new_at_branch(
         word_idx: usize,
         branch_word_or_prefix: u32,
@@ -506,7 +505,7 @@ impl<S: Store<V>, V: Debug + AsRef<[u8]>> Transaction<S, V> {
         loop {
             match node_ref {
                 // TODO check that the KeyPosition is optimized out.
-                NodeRef::ModBranch(branch) => match branch.desend(key_hash) {
+                NodeRef::ModBranch(branch) => match branch.descend(key_hash) {
                     KeyPosition::Left => node_ref = &branch.left,
                     KeyPosition::Right => node_ref = &branch.right,
                     KeyPosition::PriorWord
@@ -536,7 +535,7 @@ impl<S: Store<V>, V: Debug + AsRef<[u8]>> Transaction<S, V> {
             let node = data_store.get_node(stored_idx).map_err(|e| e.into())?;
             match node {
                 // TODO check that the KeyPosition is optimized out.
-                Node::Branch(branch) => match branch.desend(key_hash) {
+                Node::Branch(branch) => match branch.descend(key_hash) {
                     KeyPosition::Left => stored_idx = branch.left,
                     KeyPosition::Right => stored_idx = branch.right,
                     KeyPosition::PriorWord
@@ -645,7 +644,7 @@ impl<S: Store<V>, V: Debug + AsRef<[u8]>> Transaction<S, V> {
         value: V,
     ) -> Result<(), String> {
         loop {
-            let next = match branch.desend(key_hash) {
+            let next = match branch.descend(key_hash) {
                 KeyPosition::Left => &mut branch.left,
                 KeyPosition::Right => &mut branch.right,
                 KeyPosition::PrefixWord => {
