@@ -1,6 +1,6 @@
 use std::cell::RefCell;
 
-use alloc::{boxed::Box, string::String, vec::Vec};
+use alloc::{boxed::Box, format, string::String, vec::Vec};
 use bumpalo::Bump;
 
 use crate::{Branch, Leaf};
