@@ -8,12 +8,6 @@ use crate::{Branch, Leaf};
 
 pub type Idx = u32;
 
-pub trait WriteStore<V> {
-    type Error: Into<String> + Debug;
-
-    fn set_node(&mut self, node: Node<&Branch<Idx>, &Leaf<V>>) -> Result<Idx, Self::Error>;
-}
-
 pub trait Store<V> {
     type Error: Into<String> + Debug;
 

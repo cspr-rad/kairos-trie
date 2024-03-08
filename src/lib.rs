@@ -15,7 +15,10 @@ use alloc::{boxed::Box, string::String, vec::Vec};
 pub use modified::*;
 use sha2::{Digest, Sha256};
 pub use stored::Store;
-use stored::{Node, NodeHash};
+use stored::{
+    merkle::{Snapshot, SnapshotBuilder},
+    Node, NodeHash,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct KeyHash(pub [u32; 8]);
@@ -416,7 +419,7 @@ pub enum TrieRoot<V> {
     Node(NodeRef<V>),
 }
 
-pub struct Transaction<S: Store<V>, V> {
+pub struct Transaction<S, V> {
     data_store: S,
     pub current_root: TrieRoot<V>,
 }
@@ -749,5 +752,19 @@ impl<S: Store<V>, V: Debug + AsRef<[u8]>> Transaction<S, V> {
                 }
             }
         }
+    }
+}
+
+impl<'a, Db, V: Clone> Transaction<SnapshotBuilder<'a, Db, V>, V> {
+    /// An alias for `SnapshotBuilder::new_with_db`.
+    ///
+    /// Builds a snapshot of the trie before the transaction.
+    /// The `Snapshot` is not a complete representation of the trie.
+    /// The `Snapshot` only contains information about the parts of the trie touched by the transaction.
+    /// Because of this, two `Snapshot`s of the same trie may not be equal if the transactions differ.
+    ///
+    /// Note: All operations including get affect the contents of the snapshot.
+    pub fn build_initial_snapshot(&self) -> Snapshot<V> {
+        self.data_store.build_initial_snapshot()
     }
 }
