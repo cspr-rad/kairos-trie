@@ -43,7 +43,7 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
             )),
 
             // A tree with only one leaf
-            (0, 1, 0) => Ok(self.leaves[0].hash_node()),
+            (0, 1, 0) => Ok(self.leaves[0].hash_leaf()),
             (0, leaves, 0) => Err(format!(
                 "Invalid snapshot: a tree with no branches can only have one leaf. Found {} leaves",
                 leaves
@@ -54,26 +54,28 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
                 branches
             )),
 
-            _ => todo!("calc the root hash starting from the root branch at index 0"),
+            // The root hash must be at branches[0]
+            _ => self.calc_root_hash_inner(0),
         }
     }
 
-    fn calc_root_hash_inner(&self, idx: Idx) -> Result<NodeHash, Error> {
-        debug_assert!(!self.branches.is_empty());
+    // TODO fix possible stack overflow
+    // I dislike using an explicit mutable stack.
+    // I have an idea for abusing async for high performance segmented stacks
+    fn calc_root_hash_inner(&self, node: Idx) -> Result<NodeHash, String> {
+        match self.get_node(node) {
+            Ok(Node::Branch(branch)) => {
+                let left = self.calc_root_hash_inner(branch.left)?;
+                let right = self.calc_root_hash_inner(branch.right)?;
 
-        let root = &self.branches[0];
-
-        // depth first hash
-        // We could put this on the stack using a `ArrayVec<_, 256>`
-        let mut stack = vec![(root.left, root.right)];
-
-        let mut branch = &self.branches[0];
-
-        while let Node::Branch(Branch { left, right, .. }) = self.get_node(branch.left)? {
-            stack.push((*left, *right));
+                Ok(branch.hash_branch(&left, &right))
+            }
+            Ok(Node::Leaf(leaf)) => Ok(leaf.hash_leaf()),
+            Err(_) => self
+                .get_unvisted_hash(node)
+                .copied()
+                .ok_or_else(|| format!("Invalid snapshot: node {} not found", node)),
         }
-
-        todo!()
     }
 }
 

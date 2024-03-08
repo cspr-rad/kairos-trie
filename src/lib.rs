@@ -238,7 +238,7 @@ impl<NR> Branch<NR> {
         }
     }
 
-    pub fn branch_hash(&self, left: &NodeHash, right: &NodeHash) -> NodeHash {
+    pub fn hash_branch(&self, left: &NodeHash, right: &NodeHash) -> NodeHash {
         let mut hasher = Sha256::new();
 
         hasher.update(left);
@@ -400,7 +400,7 @@ pub struct Leaf<V> {
 }
 
 impl<V: AsRef<[u8]>> Leaf<V> {
-    pub fn hash_node(&self) -> NodeHash {
+    pub fn hash_leaf(&self) -> NodeHash {
         let mut hasher = Sha256::new();
         hasher.update(self.key_hash.to_bytes());
         hasher.update(self.value.as_ref());
@@ -470,12 +470,12 @@ impl<S: Store<V>, V: Debug + AsRef<[u8]>> Transaction<S, V> {
                     on_modified_branch,
                 )?;
 
-                let hash = branch.branch_hash(&left, &right);
+                let hash = branch.hash_branch(&left, &right);
                 on_modified_branch(&hash, branch);
                 Ok(hash)
             }
             NodeRef::ModLeaf(leaf) => {
-                let hash = leaf.hash_node();
+                let hash = leaf.hash_leaf();
 
                 on_modified_leaf(&hash, leaf);
                 Ok(hash)
@@ -490,15 +490,15 @@ impl<S: Store<V>, V: Debug + AsRef<[u8]>> Transaction<S, V> {
         }
     }
 
-    pub fn get(&mut self, key_hash: &KeyHash) -> Result<Option<&V>, String> {
+    pub fn get(&self, key_hash: &KeyHash) -> Result<Option<&V>, String> {
         match &self.current_root {
             TrieRoot::Empty => Ok(None),
-            TrieRoot::Node(node_ref) => Self::get_node(&mut self.data_store, node_ref, key_hash),
+            TrieRoot::Node(node_ref) => Self::get_node(&self.data_store, node_ref, key_hash),
         }
     }
 
     pub fn get_node<'root, 's: 'root>(
-        data_store: &'s mut S,
+        data_store: &'s S,
         mut node_ref: &'root NodeRef<V>,
         key_hash: &KeyHash,
     ) -> Result<Option<&'root V>, String> {
@@ -527,7 +527,7 @@ impl<S: Store<V>, V: Debug + AsRef<[u8]>> Transaction<S, V> {
     }
 
     pub fn get_stored_node<'s>(
-        data_store: &'s mut S,
+        data_store: &'s S,
         mut stored_idx: stored::Idx,
         key_hash: &KeyHash,
     ) -> Result<Option<&'s V>, String> {
