@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 pub use stored::Store;
 use stored::{
     merkle::{Snapshot, SnapshotBuilder},
-    Node, NodeHash,
+    DatabaseSet, Node, NodeHash,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -258,7 +258,7 @@ impl<NR> Branch<NR> {
     }
 }
 
-impl<V: Debug> Branch<NodeRef<V>> {
+impl<V> Branch<NodeRef<V>> {
     fn new_at_branch(
         word_idx: usize,
         branch_word_or_prefix: u32,
@@ -424,7 +424,42 @@ pub struct Transaction<S, V> {
     pub current_root: TrieRoot<V>,
 }
 
-impl<S: Store<V>, V: Debug + AsRef<[u8]>> Transaction<S, V> {
+impl<'a, Db: DatabaseSet<V>, V: Clone + AsRef<[u8]>> Transaction<SnapshotBuilder<'a, Db, V>, V> {
+    /// Write modified nodes to the database and return the root hash.
+    /// Calling this method will write all modified nodes to the database.
+    /// Calling this method again will rewrite the nodes to the database.
+    ///
+    /// Caching writes is the responsibility of the `DatabaseSet` implementation.
+    pub fn commit(&self) -> Result<NodeHash, String> {
+        let store_modified_branch =
+            &mut |hash: &NodeHash, branch: &Branch<NodeRef<V>>, left: NodeHash, right: NodeHash| {
+                let branch = Branch {
+                    left,
+                    right,
+                    mask: branch.mask,
+                    prior_word: branch.prior_word,
+                    prefix: branch.prefix.clone(),
+                };
+
+                self.data_store
+                    .db
+                    .set(*hash, Node::Branch(branch))
+                    .map_err(|e| e.into())
+            };
+
+        let store_modified_leaf = &mut |hash: &NodeHash, leaf: &Leaf<V>| {
+            self.data_store
+                .db
+                .set(*hash, Node::Leaf(leaf.clone()))
+                .map_err(|e| e.into())
+        };
+
+        let root_hash = self.calc_root_hash_inner(store_modified_branch, store_modified_leaf)?;
+        Ok(root_hash)
+    }
+}
+
+impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
     pub fn new(root: TrieRoot<V>, data_store: S) -> Self {
         Transaction {
             current_root: root,
@@ -433,29 +468,44 @@ impl<S: Store<V>, V: Debug + AsRef<[u8]>> Transaction<S, V> {
     }
 
     /// TODO a version of this that writes to the database.
-    pub fn calc_root_hash(&self) -> Result<NodeHash, String> {
-        let mut on_modified_leaf = |_: &_, _: &_| {};
-        let mut on_modified_branch = |_: &_, _: &_| {};
-
+    pub fn calc_root_hash_inner(
+        &self,
+        on_modified_branch: &mut impl FnMut(
+            &NodeHash,
+            &Branch<NodeRef<V>>,
+            NodeHash,
+            NodeHash,
+        ) -> Result<(), String>,
+        on_modified_leaf: &mut impl FnMut(&NodeHash, &Leaf<V>) -> Result<(), String>,
+    ) -> Result<NodeHash, String> {
         let root_hash = match &self.current_root {
             TrieRoot::Empty => return Ok([0; 32]),
             TrieRoot::Node(node_ref) => Self::calc_root_hash_node(
                 &self.data_store,
                 node_ref,
-                &mut on_modified_leaf,
-                &mut on_modified_branch,
+                on_modified_leaf,
+                on_modified_branch,
             )?,
         };
 
         Ok(root_hash)
     }
 
+    pub fn calc_root_hash(&self) -> Result<NodeHash, String> {
+        self.calc_root_hash_inner(&mut |_, _, _, _| Ok(()), &mut |_, _| Ok(()))
+    }
+
     /// TODO use this to store nodes in the data base
     fn calc_root_hash_node(
         data_store: &S,
         node_ref: &NodeRef<V>,
-        on_modified_leaf: &mut impl FnMut(&NodeHash, &Leaf<V>),
-        on_modified_branch: &mut impl FnMut(&NodeHash, &Branch<NodeRef<V>>),
+        on_modified_leaf: &mut impl FnMut(&NodeHash, &Leaf<V>) -> Result<(), String>,
+        on_modified_branch: &mut impl FnMut(
+            &NodeHash,
+            &Branch<NodeRef<V>>,
+            NodeHash,
+            NodeHash,
+        ) -> Result<(), String>,
     ) -> Result<NodeHash, String> {
         // TODO use a stack instead of recursion
         match node_ref {
@@ -474,13 +524,13 @@ impl<S: Store<V>, V: Debug + AsRef<[u8]>> Transaction<S, V> {
                 )?;
 
                 let hash = branch.hash_branch(&left, &right);
-                on_modified_branch(&hash, branch);
+                on_modified_branch(&hash, branch, left, right)?;
                 Ok(hash)
             }
             NodeRef::ModLeaf(leaf) => {
                 let hash = leaf.hash_leaf();
 
-                on_modified_leaf(&hash, leaf);
+                on_modified_leaf(&hash, leaf)?;
                 Ok(hash)
             }
             NodeRef::Stored(stored_idx) => {

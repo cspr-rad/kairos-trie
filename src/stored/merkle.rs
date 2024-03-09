@@ -5,7 +5,7 @@ use bumpalo::Bump;
 
 use crate::{Branch, Leaf};
 
-use super::{Database, Error, Idx, Node, NodeHash, Store};
+use super::{DatabaseGet, Error, Idx, Node, NodeHash, Store};
 
 /// A snapshot of the merkle trie
 ///
@@ -104,7 +104,7 @@ impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
 
 #[derive(Clone, Debug)]
 pub struct SnapshotBuilder<'a, Db, V> {
-    db: Db,
+    pub db: Db,
     bump: &'a Bump,
 
     /// The root of the trie is always at index 0
@@ -113,7 +113,7 @@ pub struct SnapshotBuilder<'a, Db, V> {
 
 type NodeHashMaybeNode<'a, V> = (NodeHash, Option<Node<&'a Branch<Idx>, &'a Leaf<V>>>);
 
-impl<'a, Db: Database<V>, V: Clone> Store<V> for SnapshotBuilder<'a, Db, V> {
+impl<'a, Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<'a, Db, V> {
     type Error = Error;
 
     fn get_unvisted_hash(&self, hash_idx: Idx) -> Result<&NodeHash, Self::Error> {
@@ -203,7 +203,7 @@ impl<'a, Db, V: Clone> SnapshotBuilder<'a, Db, V> {
         Error,
     >
     where
-        Db: Database<V>,
+        Db: DatabaseGet<V>,
     {
         let Ok(node) = db.get(hash) else {
             return Err(Error::NodeNotFound);
