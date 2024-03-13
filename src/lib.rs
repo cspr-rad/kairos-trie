@@ -460,13 +460,6 @@ impl<'a, Db: DatabaseSet<V>, V: Clone + AsRef<[u8]>> Transaction<SnapshotBuilder
 }
 
 impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
-    pub fn new(root: TrieRoot<V>, data_store: S) -> Self {
-        Transaction {
-            current_root: root,
-            data_store,
-        }
-    }
-
     /// TODO a version of this that writes to the database.
     pub fn calc_root_hash_inner(
         &self,
@@ -805,7 +798,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
     }
 }
 
-impl<'a, Db, V: Clone> Transaction<SnapshotBuilder<'a, Db, V>, V> {
+impl<'a, Db, V> Transaction<SnapshotBuilder<'a, Db, V>, V> {
     /// An alias for `SnapshotBuilder::new_with_db`.
     ///
     /// Builds a snapshot of the trie before the transaction.
@@ -814,7 +807,26 @@ impl<'a, Db, V: Clone> Transaction<SnapshotBuilder<'a, Db, V>, V> {
     /// Because of this, two `Snapshot`s of the same trie may not be equal if the transactions differ.
     ///
     /// Note: All operations including get affect the contents of the snapshot.
-    pub fn build_initial_snapshot(&self) -> Snapshot<V> {
+    pub fn build_initial_snapshot(&self) -> Snapshot<V>
+    where
+        V: Clone,
+    {
         self.data_store.build_initial_snapshot()
+    }
+
+    pub fn from_snapshot_builder(builder: SnapshotBuilder<'a, Db, V>) -> Self {
+        Transaction {
+            current_root: builder.trie_root(),
+            data_store: builder,
+        }
+    }
+}
+
+impl<'s, V: AsRef<[u8]>> Transaction<&'s Snapshot<V>, V> {
+    pub fn from_snapshot(snapshot: &'s Snapshot<V>) -> Result<Self, String> {
+        Ok(Transaction {
+            current_root: snapshot.trie_root()?,
+            data_store: snapshot,
+        })
     }
 }

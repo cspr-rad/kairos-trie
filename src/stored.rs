@@ -19,10 +19,30 @@ pub trait Store<V> {
     fn get_node(&self, hash_idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>, Self::Error>;
 }
 
+impl<V, S: Store<V>> Store<V> for &S {
+    type Error = S::Error;
+
+    fn get_unvisted_hash(&self, hash_idx: Idx) -> Result<&NodeHash, Self::Error> {
+        (**self).get_unvisted_hash(hash_idx)
+    }
+
+    fn get_node(&self, hash_idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>, Self::Error> {
+        (**self).get_node(hash_idx)
+    }
+}
+
 pub trait DatabaseGet<V> {
     type GetError: Into<String> + Debug;
 
     fn get(&self, hash: &NodeHash) -> Result<Node<Branch<NodeHash>, Leaf<V>>, Self::GetError>;
+}
+
+impl<V, D: DatabaseGet<V>> DatabaseGet<V> for &D {
+    type GetError = D::GetError;
+
+    fn get(&self, hash: &NodeHash) -> Result<Node<Branch<NodeHash>, Leaf<V>>, Self::GetError> {
+        (**self).get(hash)
+    }
 }
 
 pub trait DatabaseSet<V>: DatabaseGet<V> {
@@ -33,6 +53,18 @@ pub trait DatabaseSet<V>: DatabaseGet<V> {
         hash: NodeHash,
         node: Node<Branch<NodeHash>, Leaf<V>>,
     ) -> Result<(), Self::GetError>;
+}
+
+impl<V, D: DatabaseSet<V>> DatabaseSet<V> for &D {
+    type SetError = D::SetError;
+
+    fn set(
+        &self,
+        hash: NodeHash,
+        node: Node<Branch<NodeHash>, Leaf<V>>,
+    ) -> Result<(), Self::GetError> {
+        (**self).set(hash, node)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]

@@ -26,9 +26,9 @@ fn insert_get_u64_round_trip() {
         .collect();
 
     let bump = bumpalo::Bump::new();
-    let snapshot = SnapshotBuilder::new_with_db(MemoryDb::<Vec<u8>>::empty(), &bump);
+    let builder = SnapshotBuilder::empty(MemoryDb::<Vec<u8>>::empty(), &bump);
 
-    let mut txn = Transaction::new(TrieRoot::Empty, snapshot);
+    let mut txn = Transaction::from_snapshot_builder(builder);
 
     for (key, value) in hashmap.iter() {
         txn.insert(key, value.clone()).unwrap();
@@ -54,9 +54,9 @@ proptest! {
         keys in prop::collection::hash_map(arb_key_hash(), 0u64.., 0..100_000)
     ) {
         let bump = bumpalo::Bump::new();
-        let snapshot = SnapshotBuilder::new_with_db(MemoryDb::<[u8; 8]>::empty(), &bump);
+        let builder = SnapshotBuilder::empty(MemoryDb::<[u8; 8]>::empty(), &bump);
 
-        let mut txn = Transaction::new(TrieRoot::Empty, snapshot);
+        let mut txn = Transaction::from_snapshot_builder(builder);
 
         for (key, value) in keys.iter() {
             txn.insert(key, value.to_le_bytes()).unwrap();

@@ -1,9 +1,10 @@
+use core::ops::Deref;
 use std::cell::RefCell;
 
 use alloc::{boxed::Box, format, string::String, vec::Vec};
 use bumpalo::Bump;
 
-use crate::{Branch, Leaf};
+use crate::{Branch, Leaf, NodeRef, TrieRoot};
 
 use super::{DatabaseGet, Error, Idx, Node, NodeHash, Store};
 
@@ -21,43 +22,42 @@ pub struct Snapshot<V> {
 }
 
 impl<V: AsRef<[u8]>> Snapshot<V> {
-    fn get_unvisted_hash(&self, idx: Idx) -> Option<&NodeHash> {
-        let idx = idx as usize - self.branches.len() - self.leaves.len();
+    pub fn root_node_idx(&self) -> Result<Option<Idx>, String> {
+        // Revist this once https://github.com/rust-lang/rust/issues/37854 is stable
+        match (
+            self.branches.deref(),
+            self.leaves.deref(),
+            self.unvisited_nodes.deref(),
+        ) {
+            // A empty tree
+            ([], [], []) => Ok(None),
+            // A tree with only one node
+            ([_], [], []) | ([], [_], []) | ([], [], [_]) => Ok(Some(0)),
+            (branches, _, _) if !branches.is_empty() => Ok(Some(branches.len() as Idx - 1)),
+            _ => Err(format!(
+                "Invalid snapshot: \n\
+                a tree with no branches can only have one leaf.\n\
+                a tree with no branches or leaves can only have one unvisited node.\n\
+                Found {} branches, {} leaves, and {} unvisited nodes",
+                self.branches.len(),
+                self.leaves.len(),
+                self.unvisited_nodes.len()
+            )),
+        }
+    }
 
-        self.unvisited_nodes.get(idx)
+    pub fn trie_root(&self) -> Result<TrieRoot<V>, String> {
+        match self.root_node_idx()? {
+            Some(idx) => Ok(TrieRoot::Node(NodeRef::Stored(idx))),
+            None => Ok(TrieRoot::Empty),
+        }
     }
 
     /// Always check that the snapshot is of the merkle tree you expect.
     pub fn calc_root_hash(&self) -> Result<NodeHash, String> {
-        match (
-            self.branches.len(),
-            self.leaves.len(),
-            self.unvisited_nodes.len(),
-        ) {
-            // A empty tree
-            (0, 0, 0) => Ok([0; 32]),
-            // A tree with only one unvisted node
-            (0, 0, 1) => Ok(self.unvisited_nodes[0]),
-            (0, 0, unvisited) => Err(format!(
-                "Invalid snapshot: unvisited nodes cannot contain more than one node if there are no branches or leaves. Found {} unvisited nodes",
-                unvisited
-            )),
-
-            // A tree with only one leaf
-            (0, 1, 0) => Ok(self.leaves[0].hash_leaf()),
-            (0, leaves, 0) => Err(format!(
-                "Invalid snapshot: a tree with no branches can only have one leaf. Found {} leaves",
-                leaves
-            )),
-
-            (branches, 0, 0) => Err(format!(
-                "Invalid snapshot: a branch must have descendants. Found {} branches",
-                branches
-            )),
-
-            // The root hash must be the last branch in the vector
-            _ => self.calc_root_hash_inner(self.branches.len() as Idx - 1),
-        }
+        self.root_node_idx()?
+            .map(|idx| self.calc_root_hash_inner(idx))
+            .unwrap_or(Ok(NodeHash::default()))
     }
 
     // TODO fix possible stack overflow
@@ -75,7 +75,7 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
             Err(_) => self
                 .get_unvisted_hash(node)
                 .copied()
-                .ok_or_else(|| format!("Invalid snapshot: node {} not found", node)),
+                .map_err(|_| format!("Invalid snapshot: node {} not found", node)),
         }
     }
 }
@@ -84,7 +84,9 @@ impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
     type Error = Error;
 
     fn get_unvisted_hash(&self, idx: Idx) -> Result<&NodeHash, Self::Error> {
-        self.get_unvisted_hash(idx).ok_or(Error::NodeNotFound)
+        let idx = idx as usize - self.branches.len() - self.leaves.len();
+
+        self.unvisited_nodes.get(idx).ok_or(Error::NodeNotFound)
     }
 
     fn get_node(&self, idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>, Self::Error> {
@@ -158,8 +160,8 @@ impl<'a, Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<'a, Db, V> {
     }
 }
 
-impl<'a, Db, V: Clone> SnapshotBuilder<'a, Db, V> {
-    pub fn new_with_db(db: Db, bump: &'a Bump) -> Self {
+impl<'a, Db, V> SnapshotBuilder<'a, Db, V> {
+    pub fn empty(db: Db, bump: &'a Bump) -> Self {
         Self {
             db,
             bump,
@@ -168,24 +170,46 @@ impl<'a, Db, V: Clone> SnapshotBuilder<'a, Db, V> {
     }
 
     pub fn with_root_hash(self, root_hash: NodeHash) -> Self {
+        // I don't love empty being a zeroed hash
+        if root_hash == NodeHash::default() {
+            return self;
+        };
         self.nodes
             .borrow_mut()
             .push(self.bump.alloc((root_hash, None)));
         self
     }
 
-    pub fn build_initial_snapshot(&self) -> Snapshot<V> {
+    pub fn trie_root(&self) -> TrieRoot<V> {
+        match self.nodes.borrow().first() {
+            Some(_) => TrieRoot::Node(NodeRef::Stored(0)),
+            None => TrieRoot::Empty,
+        }
+    }
+
+    pub fn build_initial_snapshot(&self) -> Snapshot<V>
+    where
+        V: Clone,
+    {
         let nodes = self.nodes.borrow();
 
-        let mut state = SnapshotBuilderFold::new(&nodes);
-        let root_idx = state.fold(0);
+        if nodes.is_empty() {
+            Snapshot {
+                branches: Box::new([]),
+                leaves: Box::new([]),
+                unvisited_nodes: Box::new([]),
+            }
+        } else {
+            let mut state = SnapshotBuilderFold::new(&nodes);
+            let root_idx = state.fold(0);
 
-        debug_assert_eq!(root_idx, state.branches.len() as Idx - 1);
-        debug_assert_eq!(state.branch_count, state.branches.len() as u32);
-        debug_assert_eq!(state.leaf_count, state.leaves.len() as u32);
-        debug_assert_eq!(state.unvisited_count, state.unvisited_nodes.len() as u32);
+            debug_assert!(state.branches.is_empty() || root_idx == state.branches.len() as Idx - 1);
+            debug_assert_eq!(state.branch_count, state.branches.len() as u32);
+            debug_assert_eq!(state.leaf_count, state.leaves.len() as u32);
+            debug_assert_eq!(state.unvisited_count, state.unvisited_nodes.len() as u32);
 
-        state.build()
+            state.build()
+        }
     }
 
     #[inline(always)]
