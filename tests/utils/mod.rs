@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use kairos_trie::{
     stored::{
         merkle::{Snapshot, SnapshotBuilder},
-        DatabaseSet, MemoryDb, NodeHash,
+        DatabaseSet, NodeHash,
     },
     KeyHash, Transaction, TrieRoot,
 };

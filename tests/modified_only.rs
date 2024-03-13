@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use sha2::{Digest, Sha256};
 
 use kairos_trie::{
-    stored::{merkle::SnapshotBuilder, MemoryDb},
-    KeyHash, Transaction, TrieRoot,
+    stored::{memory_db::MemoryDb, merkle::SnapshotBuilder},
+    KeyHash, Transaction,
 };
 
 fn sha256_hash(data: &[u8]) -> [u8; 32] {

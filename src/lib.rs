@@ -254,7 +254,7 @@ impl<NR> Branch<NR> {
             .iter()
             .for_each(|word| hasher.update(word.to_le_bytes()));
 
-        hasher.finalize().into()
+        NodeHash::new(hasher.finalize().into())
     }
 }
 
@@ -403,12 +403,12 @@ pub struct Leaf<V> {
 }
 
 impl<V: AsRef<[u8]>> Leaf<V> {
+    #[inline]
     pub fn hash_leaf(&self) -> NodeHash {
         let mut hasher = Sha256::new();
         hasher.update(self.key_hash.to_bytes());
         hasher.update(self.value.as_ref());
-        let hash: NodeHash = hasher.finalize().into();
-        hash
+        NodeHash::new(hasher.finalize().into())
     }
 }
 
@@ -468,14 +468,14 @@ impl<'a, Db: DatabaseSet<V>, V: Clone + AsRef<[u8]>> Transaction<SnapshotBuilder
                 self.data_store
                     .db
                     .set(*hash, Node::Branch(branch))
-                    .map_err(|e| e.into())
+                    .map_err(|e| format!("Error writing branch {hash} to database: {e}"))
             };
 
         let store_modified_leaf = &mut |hash: &NodeHash, leaf: &Leaf<V>| {
             self.data_store
                 .db
                 .set(*hash, Node::Leaf(leaf.clone()))
-                .map_err(|e| e.into())
+                .map_err(|e| format!("Error writing leaf {hash} to database: {e}"))
         };
 
         let root_hash = self.calc_root_hash_inner(store_modified_branch, store_modified_leaf)?;
@@ -552,7 +552,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
             }
             NodeRef::Stored(stored_idx) => {
                 let hash = data_store
-                    .get_unvisted_hash(*stored_idx)
+                    .get_unvisited_hash(*stored_idx)
                     .copied()
                     .map_err(|e| e.into())?;
                 Ok(hash)

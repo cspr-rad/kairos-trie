@@ -6,7 +6,10 @@ use bumpalo::Bump;
 
 use crate::{Branch, Leaf, NodeRef, TrieRoot};
 
-use super::{DatabaseGet, Error, Idx, Node, NodeHash, Store};
+use super::{DatabaseGet, Idx, Node, NodeHash, Store};
+
+type Error = String;
+type Result<T, E = Error> = core::result::Result<T, E>;
 
 /// A snapshot of the merkle trie
 ///
@@ -23,7 +26,7 @@ pub struct Snapshot<V> {
 }
 
 impl<V: AsRef<[u8]>> Snapshot<V> {
-    pub fn root_node_idx(&self) -> Result<TrieRoot<Idx>, String> {
+    pub fn root_node_idx(&self) -> Result<TrieRoot<Idx>> {
         // Revist this once https://github.com/rust-lang/rust/issues/37854 is stable
         match (
             self.branches.deref(),
@@ -49,7 +52,7 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
         }
     }
 
-    pub fn trie_root(&self) -> Result<TrieRoot<NodeRef<V>>, String> {
+    pub fn trie_root(&self) -> Result<TrieRoot<NodeRef<V>>> {
         match self.root_node_idx()? {
             TrieRoot::Node(idx) => Ok(TrieRoot::Node(NodeRef::Stored(idx))),
             TrieRoot::Empty => Ok(TrieRoot::Empty),
@@ -57,7 +60,7 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
     }
 
     /// Always check that the snapshot is of the merkle tree you expect.
-    pub fn calc_root_hash(&self) -> Result<TrieRoot<NodeHash>, String> {
+    pub fn calc_root_hash(&self) -> Result<TrieRoot<NodeHash>> {
         match self.root_node_idx()? {
             TrieRoot::Node(idx) => Ok(TrieRoot::Node(self.calc_root_hash_inner(idx)?)),
             TrieRoot::Empty => Ok(TrieRoot::Empty),
@@ -67,7 +70,7 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
     // TODO fix possible stack overflow
     // I dislike using an explicit mutable stack.
     // I have an idea for abusing async for high performance segmented stacks
-    fn calc_root_hash_inner(&self, node: Idx) -> Result<NodeHash, String> {
+    fn calc_root_hash_inner(&self, node: Idx) -> Result<NodeHash> {
         match self.get_node(node) {
             Ok(Node::Branch(branch)) => {
                 let left = self.calc_root_hash_inner(branch.left)?;
@@ -77,7 +80,7 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
             }
             Ok(Node::Leaf(leaf)) => Ok(leaf.hash_leaf()),
             Err(_) => self
-                .get_unvisted_hash(node)
+                .get_unvisited_hash(node)
                 .copied()
                 .map_err(|_| format!("Invalid snapshot: node {} not found", node)),
         }
@@ -87,13 +90,22 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
 impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
     type Error = Error;
 
-    fn get_unvisted_hash(&self, idx: Idx) -> Result<&NodeHash, Self::Error> {
+    fn get_unvisited_hash(&self, idx: Idx) -> Result<&NodeHash> {
         let idx = idx as usize - self.branches.len() - self.leaves.len();
 
-        self.unvisited_nodes.get(idx).ok_or(Error::NodeNotFound)
+        self.unvisited_nodes.get(idx).ok_or_else(|| {
+            format!(
+                "Invalid snapshot: no unvisited node at index {}\n\
+                Snapshot has {} branches, {} leaves, and {} unvisited nodes",
+                idx,
+                self.branches.len(),
+                self.leaves.len(),
+                self.unvisited_nodes.len(),
+            )
+        })
     }
 
-    fn get_node(&self, idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>, Self::Error> {
+    fn get_node(&self, idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>> {
         let idx = idx as usize;
         let leaf_offset = self.branches.len();
         let unvisited_offset = leaf_offset + self.leaves.len();
@@ -103,7 +115,14 @@ impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
         } else if idx < unvisited_offset {
             Ok(Node::Leaf(&self.leaves[idx - leaf_offset]))
         } else {
-            Err(Error::NodeNotFound)
+            Err(format!(
+                "Invalid snapshot: no visited node at index {}\n\
+                Snapshot has {} branches, {} leaves, and {} unvisited nodes",
+                idx,
+                self.branches.len(),
+                self.leaves.len(),
+                self.unvisited_nodes.len(),
+            ))
         }
     }
 }
@@ -122,14 +141,21 @@ type NodeHashMaybeNode<'a, V> = (NodeHash, Option<Node<&'a Branch<Idx>, &'a Leaf
 impl<'a, Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<'a, Db, V> {
     type Error = Error;
 
-    fn get_unvisted_hash(&self, hash_idx: Idx) -> Result<&NodeHash, Self::Error> {
+    fn get_unvisited_hash(&self, hash_idx: Idx) -> Result<&NodeHash, Self::Error> {
         let hash_idx = hash_idx as usize;
 
         self.nodes
             .borrow()
             .get(hash_idx)
             .map(|(hash, _)| hash)
-            .ok_or(Error::NodeNotFound)
+            .ok_or_else(|| {
+                format!(
+                    "Invalid snapshot: no unvisited node at index {}\n\
+                    SnapshotBuilder has {} nodes",
+                    hash_idx,
+                    self.nodes.borrow().len()
+                )
+            })
     }
 
     fn get_node(&self, hash_idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>, Self::Error> {
@@ -141,7 +167,12 @@ impl<'a, Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<'a, Db, V> {
             .get(hash_idx)
             .map(|(hash, o_node)| (hash, *o_node))
         else {
-            return Err(Error::NodeNotFound);
+            return Err(format!(
+                "Invalid snapshot: no node at index {}\n\
+                SnapshotBuilder has {} nodes",
+                hash_idx,
+                self.nodes.borrow().len()
+            ));
         };
 
         if let Some(node) = o_node {
@@ -231,14 +262,14 @@ impl<'a, Db, V> SnapshotBuilder<'a, Db, V> {
             Option<NodeHash>,
             Option<NodeHash>,
         ),
-        Error,
+        String,
     >
     where
         Db: DatabaseGet<V>,
     {
-        let Ok(node) = db.get(hash) else {
-            return Err(Error::NodeNotFound);
-        };
+        let node = db
+            .get(hash)
+            .map_err(|e| format!("Error getting {hash} from database: `{e}`"))?;
 
         Ok(match node {
             Node::Branch(Branch {

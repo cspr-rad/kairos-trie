@@ -3,10 +3,8 @@ mod utils;
 use proptest::prelude::*;
 use std::collections::HashMap;
 
-use sha2::{Digest, Sha256};
-
 use kairos_trie::{
-    stored::{merkle::SnapshotBuilder, MemoryDb, NodeHash},
+    stored::{memory_db::MemoryDb, merkle::SnapshotBuilder},
     KeyHash, Transaction, TrieRoot,
 };
 
