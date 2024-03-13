@@ -11,6 +11,7 @@ use super::{DatabaseGet, Error, Idx, Node, NodeHash, Store};
 /// A snapshot of the merkle trie
 ///
 /// Contains visited nodes and unvisited nodes
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot<V> {
     /// The last branch is the root of the trie if it exists.
     branches: Box<[Branch<Idx>]>,

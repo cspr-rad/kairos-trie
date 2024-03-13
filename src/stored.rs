@@ -74,54 +74,19 @@ pub enum Node<B, L> {
 }
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum Error {
-    NodeNotFound,
+pub struct NodeHash {
+    bytes: [u8; 32],
 }
 
-impl From<Error> for String {
-    fn from(err: Error) -> String {
-        match err {
-            Error::NodeNotFound => "Node not found".into(),
-        }
+impl AsRef<[u8]> for NodeHash {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
     }
 }
 
-pub type NodeHash = [u8; 32];
-
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct MemoryDb<V> {
-    leaves: RefCell<BTreeMap<NodeHash, Node<Branch<NodeHash>, Leaf<V>>>>,
-}
-
-impl<V> MemoryDb<V> {
-    pub fn empty() -> Self {
-        Self {
-            leaves: RefCell::default(),
-        }
-    }
-}
-
-impl<V: Clone> DatabaseGet<V> for MemoryDb<V> {
-    type GetError = Error;
-
-    fn get(&self, hash_idx: &NodeHash) -> Result<Node<Branch<NodeHash>, Leaf<V>>, Self::GetError> {
-        self.leaves
-            .borrow()
-            .get(hash_idx)
-            .cloned()
-            .ok_or(Error::NodeNotFound)
-    }
-}
-
-impl<V: Clone> DatabaseSet<V> for MemoryDb<V> {
-    type SetError = Error;
-
-    fn set(
-        &self,
-        hash_idx: NodeHash,
-        node: Node<Branch<NodeHash>, Leaf<V>>,
-    ) -> Result<(), Self::SetError> {
-        self.leaves.borrow_mut().insert(hash_idx, node);
-        Ok(())
+impl Display for NodeHash {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        // TODO hex
+        write!(f, "NodeHash({:?})", &self.bytes)
     }
 }
