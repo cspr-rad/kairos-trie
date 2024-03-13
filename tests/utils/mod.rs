@@ -35,6 +35,7 @@ pub fn run_against_snapshot(
     new_root_hash: TrieRoot<NodeHash>,
     old_root_hash: TrieRoot<NodeHash>,
 ) {
+    dbg!(&snapshot);
     assert_eq!(old_root_hash, snapshot.calc_root_hash().unwrap());
 
     let mut txn = Transaction::from_snapshot(&snapshot).unwrap();

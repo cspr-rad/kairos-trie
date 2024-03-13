@@ -26,30 +26,51 @@ prop_compose! {
 
 proptest! {
     #[test]
-    fn prop_insert_get_rand(
-        maps in prop::collection::vec(arb_hashmap(), 1..10)
+    fn prop_end_to_end_example(
+        maps in prop::collection::vec(arb_hashmap(), 1..3)
     ) {
-        let db = &MemoryDb::<[u8; 8]>::empty();
+        end_to_end_example(maps)
+    }
+}
 
-        let mut prior_root_hash = TrieRoot::default();
+#[test]
+fn end_to_end_example_1() {
+    end_to_end_example(vec![HashMap::new()]);
+}
 
-        for map in maps.iter() {
-            let (new_root_hash, snapshot) = utils::run_against_snapshot_builder(map, prior_root_hash, db);
-            utils::run_against_snapshot(map, snapshot, new_root_hash, prior_root_hash);
-            prior_root_hash = new_root_hash;
-        }
+#[test]
+fn end_to_end_example_2() {
+    end_to_end_example(vec![HashMap::new(), HashMap::new()]);
+}
 
-        let merged_map: HashMap<KeyHash, u64> = maps.into_iter().flat_map(|m| m.into_iter()).collect();
+#[test]
+fn end_to_end_example_dup_maps_0() {
+    let map = HashMap::from_iter([(KeyHash([0; 8]), 0)]);
+    end_to_end_example(vec![map.clone(), map]);
+}
 
+fn end_to_end_example(maps: Vec<HashMap<KeyHash, u64>>) {
+    let db = &MemoryDb::<[u8; 8]>::empty();
 
-        let bump = bumpalo::Bump::new();
-        let txn = Transaction::from_snapshot_builder(SnapshotBuilder::<_, [u8; 8]>::empty(db, &bump)
-        .with_trie_root_hash(prior_root_hash));
+    let mut prior_root_hash = TrieRoot::default();
+
+    for map in maps.iter() {
+        let (new_root_hash, snapshot) =
+            utils::run_against_snapshot_builder(map, prior_root_hash, db);
+        utils::run_against_snapshot(map, snapshot, new_root_hash, prior_root_hash);
+        prior_root_hash = new_root_hash;
+    }
+
+    let merged_map: HashMap<KeyHash, u64> = maps.into_iter().flat_map(|m| m.into_iter()).collect();
+
+    let bump = bumpalo::Bump::new();
+    let txn = Transaction::from_snapshot_builder(
+        SnapshotBuilder::<_, [u8; 8]>::empty(db, &bump).with_trie_root_hash(prior_root_hash),
+    );
 
     //     for (k, v) in merged_map.iter() {
     //         let v = v.to_be_bytes();
     //         let ret_v = txn.get(k).unwrap().unwrap();
     //         assert_eq!(v, *ret_v);
     //     }
-    }
 }
