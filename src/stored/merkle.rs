@@ -22,7 +22,7 @@ pub struct Snapshot<V> {
 }
 
 impl<V: AsRef<[u8]>> Snapshot<V> {
-    pub fn root_node_idx(&self) -> Result<Option<Idx>, String> {
+    pub fn root_node_idx(&self) -> Result<TrieRoot<Idx>, String> {
         // Revist this once https://github.com/rust-lang/rust/issues/37854 is stable
         match (
             self.branches.deref(),
@@ -30,10 +30,12 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
             self.unvisited_nodes.deref(),
         ) {
             // A empty tree
-            ([], [], []) => Ok(None),
+            ([], [], []) => Ok(TrieRoot::Empty),
             // A tree with only one node
-            ([_], [], []) | ([], [_], []) | ([], [], [_]) => Ok(Some(0)),
-            (branches, _, _) if !branches.is_empty() => Ok(Some(branches.len() as Idx - 1)),
+            ([_], [], []) | ([], [_], []) | ([], [], [_]) => Ok(TrieRoot::Node(0)),
+            (branches, _, _) if !branches.is_empty() => {
+                Ok(TrieRoot::Node(branches.len() as Idx - 1))
+            }
             _ => Err(format!(
                 "Invalid snapshot: \n\
                 a tree with no branches can only have one leaf.\n\
@@ -46,18 +48,19 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
         }
     }
 
-    pub fn trie_root(&self) -> Result<TrieRoot<V>, String> {
+    pub fn trie_root(&self) -> Result<TrieRoot<NodeRef<V>>, String> {
         match self.root_node_idx()? {
-            Some(idx) => Ok(TrieRoot::Node(NodeRef::Stored(idx))),
-            None => Ok(TrieRoot::Empty),
+            TrieRoot::Node(idx) => Ok(TrieRoot::Node(NodeRef::Stored(idx))),
+            TrieRoot::Empty => Ok(TrieRoot::Empty),
         }
     }
 
     /// Always check that the snapshot is of the merkle tree you expect.
-    pub fn calc_root_hash(&self) -> Result<NodeHash, String> {
-        self.root_node_idx()?
-            .map(|idx| self.calc_root_hash_inner(idx))
-            .unwrap_or(Ok(NodeHash::default()))
+    pub fn calc_root_hash(&self) -> Result<TrieRoot<NodeHash>, String> {
+        match self.root_node_idx()? {
+            TrieRoot::Node(idx) => Ok(TrieRoot::Node(self.calc_root_hash_inner(idx)?)),
+            TrieRoot::Empty => Ok(TrieRoot::Empty),
+        }
     }
 
     // TODO fix possible stack overflow
@@ -169,18 +172,21 @@ impl<'a, Db, V> SnapshotBuilder<'a, Db, V> {
         }
     }
 
+    pub fn with_trie_root_hash(self, root_hash: TrieRoot<NodeHash>) -> Self {
+        match root_hash {
+            TrieRoot::Node(hash) => self.with_root_hash(hash),
+            TrieRoot::Empty => self,
+        }
+    }
+
     pub fn with_root_hash(self, root_hash: NodeHash) -> Self {
-        // I don't love empty being a zeroed hash
-        if root_hash == NodeHash::default() {
-            return self;
-        };
         self.nodes
             .borrow_mut()
             .push(self.bump.alloc((root_hash, None)));
         self
     }
 
-    pub fn trie_root(&self) -> TrieRoot<V> {
+    pub fn trie_root(&self) -> TrieRoot<NodeRef<V>> {
         match self.nodes.borrow().first() {
             Some(_) => TrieRoot::Node(NodeRef::Stored(0)),
             None => TrieRoot::Empty,

@@ -31,7 +31,7 @@ proptest! {
     ) {
         let db = &MemoryDb::<[u8; 8]>::empty();
 
-        let mut prior_root_hash = NodeHash::default();
+        let mut prior_root_hash = TrieRoot::default();
 
         for map in maps.iter() {
             let (new_root_hash, snapshot) = utils::run_against_snapshot_builder(map, prior_root_hash, db);
@@ -44,7 +44,7 @@ proptest! {
 
         let bump = bumpalo::Bump::new();
         let txn = Transaction::from_snapshot_builder(SnapshotBuilder::<_, [u8; 8]>::empty(db, &bump)
-        .with_root_hash(prior_root_hash));
+        .with_trie_root_hash(prior_root_hash));
 
     //     for (k, v) in merged_map.iter() {
     //         let v = v.to_be_bytes();

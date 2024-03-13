@@ -412,16 +412,40 @@ impl<V: AsRef<[u8]>> Leaf<V> {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
-pub enum TrieRoot<V> {
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
+pub enum TrieRoot<T> {
     #[default]
     Empty,
-    Node(NodeRef<V>),
+    Node(T),
+}
+
+impl From<NodeHash> for TrieRoot<NodeHash> {
+    fn from(hash: NodeHash) -> Self {
+        Self::Node(hash)
+    }
+}
+
+impl From<Option<NodeHash>> for TrieRoot<NodeHash> {
+    fn from(hash: Option<NodeHash>) -> Self {
+        match hash {
+            Some(hash) => Self::Node(hash),
+            None => Self::Empty,
+        }
+    }
+}
+
+impl From<TrieRoot<NodeHash>> for Option<NodeHash> {
+    fn from(value: TrieRoot<NodeHash>) -> Self {
+        match value {
+            TrieRoot::Empty => None,
+            TrieRoot::Node(hash) => Some(hash),
+        }
+    }
 }
 
 pub struct Transaction<S, V> {
     data_store: S,
-    pub current_root: TrieRoot<V>,
+    pub current_root: TrieRoot<NodeRef<V>>,
 }
 
 impl<'a, Db: DatabaseSet<V>, V: Clone + AsRef<[u8]>> Transaction<SnapshotBuilder<'a, Db, V>, V> {
@@ -430,7 +454,7 @@ impl<'a, Db: DatabaseSet<V>, V: Clone + AsRef<[u8]>> Transaction<SnapshotBuilder
     /// Calling this method again will rewrite the nodes to the database.
     ///
     /// Caching writes is the responsibility of the `DatabaseSet` implementation.
-    pub fn commit(&self) -> Result<NodeHash, String> {
+    pub fn commit(&self) -> Result<TrieRoot<NodeHash>, String> {
         let store_modified_branch =
             &mut |hash: &NodeHash, branch: &Branch<NodeRef<V>>, left: NodeHash, right: NodeHash| {
                 let branch = Branch {
@@ -470,9 +494,9 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
             NodeHash,
         ) -> Result<(), String>,
         on_modified_leaf: &mut impl FnMut(&NodeHash, &Leaf<V>) -> Result<(), String>,
-    ) -> Result<NodeHash, String> {
+    ) -> Result<TrieRoot<NodeHash>, String> {
         let root_hash = match &self.current_root {
-            TrieRoot::Empty => return Ok([0; 32]),
+            TrieRoot::Empty => return Ok(TrieRoot::Empty),
             TrieRoot::Node(node_ref) => Self::calc_root_hash_node(
                 &self.data_store,
                 node_ref,
@@ -481,10 +505,10 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
             )?,
         };
 
-        Ok(root_hash)
+        Ok(TrieRoot::Node(root_hash))
     }
 
-    pub fn calc_root_hash(&self) -> Result<NodeHash, String> {
+    pub fn calc_root_hash(&self) -> Result<TrieRoot<NodeHash>, String> {
         self.calc_root_hash_inner(&mut |_, _, _, _| Ok(()), &mut |_, _| Ok(()))
     }
 
@@ -668,15 +692,23 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                         Self::insert_below_branch(data_store, branch, key_hash, value)
                     }
                     stored::Node::Leaf(leaf) => {
-                        *root = NodeRef::ModBranch(Branch::new_from_leafs(
-                            0,
-                            StoredLeafRef::new(leaf, *stored_idx),
-                            Box::new(Leaf {
+                        if leaf.key_hash == *key_hash {
+                            *root = NodeRef::ModLeaf(Box::new(Leaf {
                                 key_hash: *key_hash,
                                 value,
-                            }),
-                        ));
-                        Ok(())
+                            }));
+                            Ok(())
+                        } else {
+                            *root = NodeRef::ModBranch(Branch::new_from_leafs(
+                                0,
+                                StoredLeafRef::new(leaf, *stored_idx),
+                                Box::new(Leaf {
+                                    key_hash: *key_hash,
+                                    value,
+                                }),
+                            ));
+                            Ok(())
+                        }
                     }
                 }
             }

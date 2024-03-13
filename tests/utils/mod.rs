@@ -10,11 +10,11 @@ use kairos_trie::{
 
 pub fn run_against_snapshot_builder<Db: DatabaseSet<[u8; 8]>>(
     new: &HashMap<KeyHash, u64>,
-    old_root_hash: NodeHash,
+    old_root_hash: TrieRoot<NodeHash>,
     db: Db,
-) -> (NodeHash, Snapshot<[u8; 8]>) {
+) -> (TrieRoot<NodeHash>, Snapshot<[u8; 8]>) {
     let bump = bumpalo::Bump::new();
-    let builder = SnapshotBuilder::empty(db, &bump).with_root_hash(old_root_hash);
+    let builder = SnapshotBuilder::empty(db, &bump).with_trie_root_hash(old_root_hash);
 
     let mut txn = Transaction::from_snapshot_builder(builder);
 
@@ -32,8 +32,8 @@ pub fn run_against_snapshot_builder<Db: DatabaseSet<[u8; 8]>>(
 pub fn run_against_snapshot(
     new: &HashMap<KeyHash, u64>,
     snapshot: Snapshot<[u8; 8]>,
-    new_root_hash: NodeHash,
-    old_root_hash: NodeHash,
+    new_root_hash: TrieRoot<NodeHash>,
+    old_root_hash: TrieRoot<NodeHash>,
 ) {
     assert_eq!(old_root_hash, snapshot.calc_root_hash().unwrap());
 
