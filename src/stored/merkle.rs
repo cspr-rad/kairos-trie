@@ -62,22 +62,26 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
     /// Always check that the snapshot is of the merkle tree you expect.
     pub fn calc_root_hash(&self) -> Result<TrieRoot<NodeHash>> {
         match self.root_node_idx()? {
-            TrieRoot::Node(idx) => Ok(TrieRoot::Node(self.calc_root_hash_inner(idx)?)),
+            TrieRoot::Node(idx) => Ok(TrieRoot::Node(self.calc_subtree_hash(idx)?)),
             TrieRoot::Empty => Ok(TrieRoot::Empty),
         }
     }
+}
+
+impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
+    type Error = Error;
 
     // TODO fix possible stack overflow
     // I dislike using an explicit mutable stack.
     // I have an idea for abusing async for high performance segmented stacks
-    fn calc_root_hash_inner(&self, node: Idx) -> Result<NodeHash> {
+    fn calc_subtree_hash(&self, node: Idx) -> Result<NodeHash> {
         let idx = node as usize;
         let leaf_offset = self.branches.len();
         let unvisited_offset = leaf_offset + self.leaves.len();
 
         if let Some(branch) = self.branches.get(idx) {
-            let left = self.calc_root_hash_inner(branch.left)?;
-            let right = self.calc_root_hash_inner(branch.right)?;
+            let left = self.calc_subtree_hash(branch.left)?;
+            let right = self.calc_subtree_hash(branch.right)?;
 
             Ok(branch.hash_branch(&left, &right))
         } else if let Some(leaf) = self.leaves.get(idx - leaf_offset) {
@@ -95,32 +99,8 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
             ))
         }
     }
-}
 
-impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
-    type Error = Error;
-
-    fn get_unvisited_hash(&self, idx: Idx) -> Result<&NodeHash> {
-        let error = || {
-            format!(
-                "Invalid snapshot: no unvisited node at index {}\n\
-                Snapshot has {} branches, {} leaves, and {} unvisited nodes",
-                idx,
-                self.branches.len(),
-                self.leaves.len(),
-                self.unvisited_nodes.len(),
-            )
-        };
-
-        let idx = idx as usize;
-        if idx < self.branches.len() + self.leaves.len() {
-            return Err(error());
-        }
-        let idx = idx - self.branches.len() - self.leaves.len();
-
-        self.unvisited_nodes.get(idx).ok_or_else(error)
-    }
-
+    #[inline]
     fn get_node(&self, idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>> {
         let idx = idx as usize;
         let leaf_offset = self.branches.len();
@@ -157,13 +137,13 @@ type NodeHashMaybeNode<'a, V> = (&'a NodeHash, Option<Node<&'a Branch<Idx>, &'a 
 impl<'a, Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<'a, Db, V> {
     type Error = Error;
 
-    fn get_unvisited_hash(&self, hash_idx: Idx) -> Result<&NodeHash, Self::Error> {
+    fn calc_subtree_hash(&self, hash_idx: Idx) -> Result<NodeHash, Self::Error> {
         let hash_idx = hash_idx as usize;
 
         self.nodes
             .borrow()
             .get(hash_idx)
-            .map(|(hash, _)| *hash)
+            .map(|(hash, _)| **hash)
             .ok_or_else(|| {
                 format!(
                     "Invalid snapshot: no unvisited node at index {}\n\

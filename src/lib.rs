@@ -207,6 +207,7 @@ impl<NR> Branch<NR> {
         let word_idx = self.mask.bit_idx as usize / 32;
         debug_assert!(word_idx < 8);
 
+        debug_assert!(self.prefix.len() <= word_idx);
         let prefix_offset = word_idx - self.prefix.len();
 
         let prefix_diff = iter::zip(self.prefix.iter(), key_hash.0.iter().skip(prefix_offset))
@@ -221,6 +222,7 @@ impl<NR> Branch<NR> {
             };
         }
 
+        // If sub wraps around to the last word, the prior word is 0.
         let prior_word_idx = word_idx.wrapping_sub(1);
         let prior_word = key_hash.0.get(prior_word_idx).unwrap_or(&0);
 
@@ -548,13 +550,14 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                 on_modified_leaf(&hash, leaf)?;
                 Ok(hash)
             }
-            NodeRef::Stored(stored_idx) => {
-                let hash = data_store
-                    .get_unvisited_hash(*stored_idx)
-                    .copied()
-                    .map_err(|e| format!("Error in `calc_root_hash_node`: {e}"))?;
-                Ok(hash)
-            }
+            NodeRef::Stored(stored_idx) => data_store.calc_subtree_hash(*stored_idx).map_err(|e| {
+                format!(
+                    "Error in `calc_root_hash_node`: {e} at {file}:{line}:{column}",
+                    file = file!(),
+                    line = line!(),
+                    column = column!()
+                )
+            }),
         }
     }
 
@@ -821,7 +824,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                         }
                         stored::Node::Leaf(leaf) => {
                             *next = NodeRef::ModBranch(Branch::new_from_leafs(
-                                branch.mask.word_idx() - 1,
+                                branch.mask.word_idx().saturating_sub(1),
                                 StoredLeafRef::new(leaf, *stored_idx),
                                 Box::new(Leaf {
                                     key_hash: *key_hash,

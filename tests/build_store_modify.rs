@@ -16,7 +16,7 @@ prop_compose! {
 
 prop_compose! {
     fn arb_hashmap()(
-        map in prop::collection::hash_map(arb_key_hash(), 0u64.., 0..2)
+        map in prop::collection::hash_map(arb_key_hash(), 0u64.., 0..1_000)
     ) -> HashMap<KeyHash, u64> {
         map
     }
@@ -25,7 +25,7 @@ prop_compose! {
 proptest! {
     #[test]
     fn prop_end_to_end_example(
-        maps in prop::collection::vec(arb_hashmap(), 1..3)
+        maps in prop::collection::vec(arb_hashmap(), 1..100)
     ) {
         end_to_end_example(maps)
     }
