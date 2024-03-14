@@ -9,6 +9,7 @@ pub mod stored;
 use core::fmt::Debug;
 use core::{iter, mem};
 
+use alloc::format;
 use alloc::{boxed::Box, string::String, vec::Vec};
 pub use modified::*;
 use sha2::{Digest, Sha256};

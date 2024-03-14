@@ -1,6 +1,6 @@
 use core::cell::RefCell;
 
-use alloc::collections::BTreeMap;
+use alloc::{collections::BTreeMap, format, string::String};
 
 use crate::{Branch, Leaf};
 

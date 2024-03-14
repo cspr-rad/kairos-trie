@@ -1,5 +1,4 @@
-use core::ops::Deref;
-use std::cell::RefCell;
+use core::{cell::RefCell, ops::Deref};
 
 use alloc::{boxed::Box, format, string::String, vec::Vec};
 use bumpalo::Bump;
