@@ -71,18 +71,28 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
     // I dislike using an explicit mutable stack.
     // I have an idea for abusing async for high performance segmented stacks
     fn calc_root_hash_inner(&self, node: Idx) -> Result<NodeHash> {
-        match self.get_node(node) {
-            Ok(Node::Branch(branch)) => {
-                let left = self.calc_root_hash_inner(branch.left)?;
-                let right = self.calc_root_hash_inner(branch.right)?;
+        let idx = node as usize;
+        let leaf_offset = self.branches.len();
+        let unvisited_offset = leaf_offset + self.leaves.len();
 
-                Ok(branch.hash_branch(&left, &right))
-            }
-            Ok(Node::Leaf(leaf)) => Ok(leaf.hash_leaf()),
-            Err(_) => self
-                .get_unvisited_hash(node)
-                .copied()
-                .map_err(|_| format!("Invalid snapshot: node {} not found", node)),
+        if let Some(branch) = self.branches.get(idx) {
+            let left = self.calc_root_hash_inner(branch.left)?;
+            let right = self.calc_root_hash_inner(branch.right)?;
+
+            Ok(branch.hash_branch(&left, &right))
+        } else if let Some(leaf) = self.leaves.get(idx - leaf_offset) {
+            Ok(leaf.hash_leaf())
+        } else if let Some(hash) = self.unvisited_nodes.get(idx - unvisited_offset) {
+            Ok(*hash)
+        } else {
+            Err(format!(
+                "Invalid snapshot: node {} not found\n\
+                Snapshot has {} branches, {} leaves, and {} unvisited nodes",
+                idx,
+                self.branches.len(),
+                self.leaves.len(),
+                self.unvisited_nodes.len(),
+            ))
         }
     }
 }
@@ -91,9 +101,7 @@ impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
     type Error = Error;
 
     fn get_unvisited_hash(&self, idx: Idx) -> Result<&NodeHash> {
-        let idx = idx as usize - self.branches.len() - self.leaves.len();
-
-        self.unvisited_nodes.get(idx).ok_or_else(|| {
+        let error = || {
             format!(
                 "Invalid snapshot: no unvisited node at index {}\n\
                 Snapshot has {} branches, {} leaves, and {} unvisited nodes",
@@ -102,7 +110,15 @@ impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
                 self.leaves.len(),
                 self.unvisited_nodes.len(),
             )
-        })
+        };
+
+        let idx = idx as usize;
+        if idx < self.branches.len() + self.leaves.len() {
+            return Err(error());
+        }
+        let idx = idx - self.branches.len() - self.leaves.len();
+
+        self.unvisited_nodes.get(idx).ok_or_else(error)
     }
 
     fn get_node(&self, idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>> {
@@ -127,16 +143,16 @@ impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct SnapshotBuilder<'a, Db, V> {
     pub db: Db,
     bump: &'a Bump,
 
     /// The root of the trie is always at index 0
-    nodes: RefCell<Vec<&'a NodeHashMaybeNode<'a, V>>>,
+    nodes: RefCell<Vec<(&'a NodeHash, Option<Node<&'a Branch<Idx>, &'a Leaf<V>>>)>>,
 }
 
-type NodeHashMaybeNode<'a, V> = (NodeHash, Option<Node<&'a Branch<Idx>, &'a Leaf<V>>>);
+type NodeHashMaybeNode<'a, V> = (&'a NodeHash, Option<Node<&'a Branch<Idx>, &'a Leaf<V>>>);
 
 impl<'a, Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<'a, Db, V> {
     type Error = Error;
@@ -147,7 +163,7 @@ impl<'a, Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<'a, Db, V> {
         self.nodes
             .borrow()
             .get(hash_idx)
-            .map(|(hash, _)| hash)
+            .map(|(hash, _)| *hash)
             .ok_or_else(|| {
                 format!(
                     "Invalid snapshot: no unvisited node at index {}\n\
@@ -160,18 +176,14 @@ impl<'a, Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<'a, Db, V> {
 
     fn get_node(&self, hash_idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>, Self::Error> {
         let hash_idx = hash_idx as usize;
+        let mut nodes = self.nodes.borrow_mut();
 
-        let Some((hash, o_node)) = self
-            .nodes
-            .borrow()
-            .get(hash_idx)
-            .map(|(hash, o_node)| (hash, *o_node))
-        else {
+        let Some((hash, o_node)) = nodes.get(hash_idx).map(|(hash, o_node)| (hash, *o_node)) else {
             return Err(format!(
                 "Invalid snapshot: no node at index {}\n\
                 SnapshotBuilder has {} nodes",
                 hash_idx,
-                self.nodes.borrow().len()
+                nodes.len()
             ));
         };
 
@@ -179,18 +191,39 @@ impl<'a, Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<'a, Db, V> {
             return Ok(node);
         }
 
-        let next_idx = self.nodes.borrow().len() as Idx;
-        let (node, left, right) = Self::get_from_db(self.bump, &self.db, hash, next_idx)?;
+        let node = self
+            .db
+            .get(hash)
+            .map_err(|e| format!("Error getting {hash} from database: `{e}`"))?;
 
-        let add_unvisited = |hash: Option<NodeHash>| {
-            if let Some(hash) = hash {
-                self.nodes.borrow_mut().push(self.bump.alloc((hash, None)))
+        let node = match node {
+            Node::Branch(Branch {
+                mask,
+                left,
+                right,
+                prior_word,
+                prefix,
+            }) => {
+                let idx = nodes.len() as Idx;
+
+                let left = self.bump.alloc(left);
+                let right = self.bump.alloc(right);
+
+                nodes.push((&*left, None));
+                nodes.push((&*right, None));
+
+                Node::Branch(&*self.bump.alloc(Branch {
+                    mask,
+                    left: idx,
+                    right: idx + 1,
+                    prior_word,
+                    prefix,
+                }))
             }
+            Node::Leaf(leaf) => Node::Leaf(&*self.bump.alloc(leaf)),
         };
 
-        add_unvisited(left);
-        add_unvisited(right);
-
+        nodes[hash_idx].1 = Some(node);
         Ok(node)
     }
 }
@@ -212,9 +245,8 @@ impl<'a, Db, V> SnapshotBuilder<'a, Db, V> {
     }
 
     pub fn with_root_hash(self, root_hash: NodeHash) -> Self {
-        self.nodes
-            .borrow_mut()
-            .push(self.bump.alloc((root_hash, None)));
+        let root_hash = self.bump.alloc(root_hash);
+        self.nodes.borrow_mut().push((&*root_hash, None));
         self
     }
 
@@ -249,54 +281,10 @@ impl<'a, Db, V> SnapshotBuilder<'a, Db, V> {
             state.build()
         }
     }
-
-    #[inline(always)]
-    fn get_from_db(
-        bump: &'a Bump,
-        db: &Db,
-        hash: &NodeHash,
-        next_idx: Idx,
-    ) -> Result<
-        (
-            Node<&'a Branch<Idx>, &'a Leaf<V>>,
-            Option<NodeHash>,
-            Option<NodeHash>,
-        ),
-        String,
-    >
-    where
-        Db: DatabaseGet<V>,
-    {
-        let node = db
-            .get(hash)
-            .map_err(|e| format!("Error getting {hash} from database: `{e}`"))?;
-
-        Ok(match node {
-            Node::Branch(Branch {
-                mask,
-                left,
-                right,
-                prior_word,
-                prefix,
-            }) => (
-                Node::Branch(&*bump.alloc(Branch {
-                    mask,
-                    left: next_idx,
-                    right: next_idx + 1,
-                    prior_word,
-                    prefix,
-                })),
-                Some(left),
-                Some(right),
-            ),
-
-            Node::Leaf(leaf) => (Node::Leaf(&*bump.alloc(leaf)), None, None),
-        })
-    }
 }
 
 struct SnapshotBuilderFold<'v, 'a, V> {
-    nodes: &'v [&'a NodeHashMaybeNode<'a, V>],
+    nodes: &'v [NodeHashMaybeNode<'a, V>],
     /// The count of branches that will be in the snapshot
     branch_count: u32,
     /// The count of leaves that will be in the snapshot
@@ -309,7 +297,7 @@ struct SnapshotBuilderFold<'v, 'a, V> {
 }
 
 impl<'v, 'a, V> SnapshotBuilderFold<'v, 'a, V> {
-    fn new(nodes: &'v [&'a NodeHashMaybeNode<'_, V>]) -> Self {
+    fn new(nodes: &'v [NodeHashMaybeNode<'a, V>]) -> Self {
         let mut branch_count = 0;
         let mut leaf_count = 0;
         let mut unvisited_count = 0;

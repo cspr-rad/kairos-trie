@@ -66,9 +66,9 @@ fn end_to_end_example(maps: Vec<HashMap<KeyHash, u64>>) {
         SnapshotBuilder::<_, [u8; 8]>::empty(db, &bump).with_trie_root_hash(prior_root_hash),
     );
 
-    //     for (k, v) in merged_map.iter() {
-    //         let v = v.to_be_bytes();
-    //         let ret_v = txn.get(k).unwrap().unwrap();
-    //         assert_eq!(v, *ret_v);
-    //     }
+    for (k, v) in merged_map.iter() {
+        let v = v.to_le_bytes();
+        let ret_v = txn.get(k).unwrap().unwrap();
+        assert_eq!(v, *ret_v);
+    }
 }

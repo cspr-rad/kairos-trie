@@ -1,7 +1,7 @@
 pub mod memory_db;
 pub mod merkle;
 
-use alloc::{fmt::Debug, string::String};
+use alloc::fmt::Debug;
 use core::{fmt::Display, hash::Hash};
 
 use crate::{Branch, Leaf};
@@ -9,7 +9,7 @@ use crate::{Branch, Leaf};
 pub type Idx = u32;
 
 pub trait Store<V> {
-    type Error: Into<String> + Debug;
+    type Error: Display;
 
     /// Must return a hash of a node that has not been visited.
     /// May return a hash of a node that has already been visited.

@@ -1,7 +1,5 @@
 #![allow(clippy::type_complexity)]
 #![cfg_attr(not(feature = "std"), no_std)]
-#[cfg(not(feature = "std"))]
-extern crate core as std;
 
 extern crate alloc;
 
@@ -9,7 +7,7 @@ pub mod modified;
 pub mod stored;
 
 use core::fmt::Debug;
-use std::{iter, mem};
+use core::{iter, mem};
 
 use alloc::{boxed::Box, string::String, vec::Vec};
 pub use modified::*;
@@ -554,7 +552,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                 let hash = data_store
                     .get_unvisited_hash(*stored_idx)
                     .copied()
-                    .map_err(|e| e.into())?;
+                    .map_err(|e| format!("Error in `calc_root_hash_node`: {e}"))?;
                 Ok(hash)
             }
         }
@@ -602,7 +600,9 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
         key_hash: &KeyHash,
     ) -> Result<Option<&'s V>, String> {
         loop {
-            let node = data_store.get_node(stored_idx).map_err(|e| e.into())?;
+            let node = data_store
+                .get_node(stored_idx)
+                .map_err(|e| format!("Error in `get_stored_node`: {e}"))?;
             match node {
                 // TODO check that the KeyPosition is optimized out.
                 Node::Branch(branch) => match branch.descend(key_hash) {
@@ -622,7 +622,10 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
             }
         }
 
-        match data_store.get_node(stored_idx).map_err(|e| e.into())? {
+        match data_store
+            .get_node(stored_idx)
+            .map_err(|e| format!("Error in `get_stored_node`: {e}"))?
+        {
             Node::Leaf(leaf) => Ok(Some(&leaf.value)),
             _ => unreachable!("Prior loop only breaks on a leaf"),
         }
@@ -674,7 +677,9 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                 }
             }
             NodeRef::Stored(stored_idx) => {
-                let new_node = data_store.get_node(*stored_idx).map_err(|e| e.into())?;
+                let new_node = data_store.get_node(*stored_idx).map_err(|e| {
+                    format!("Error at `{}:{}:{}`: `{e}`", file!(), line!(), column!())
+                })?;
                 match new_node {
                     stored::Node::Branch(new_branch) => {
                         *root = NodeRef::ModBranch(Box::new(Branch {
@@ -793,7 +798,9 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                 }
                 NodeRef::Stored(stored_idx) => {
                     // TODO this is an artificial load of leaf.value.
-                    let new_node = data_store.get_node(*stored_idx).map_err(|e| e.into())?;
+                    let new_node = data_store
+                        .get_node(*stored_idx)
+                        .map_err(|e| format!("Error in `insert_below_branch`: {e}"))?;
                     match new_node {
                         stored::Node::Branch(new_branch) => {
                             *next = NodeRef::ModBranch(Box::new(Branch {
