@@ -4,6 +4,4 @@
 
 - delete node method
 - update node method
-- testing
 - documentation
-- snapshot verification
