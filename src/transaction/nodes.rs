@@ -1,6 +1,6 @@
+use alloc::{boxed::Box, vec::Vec};
 use core::{iter, mem};
 
-use alloc::{boxed::Box, vec::Vec};
 use sha2::{Digest, Sha256};
 
 use crate::{stored, KeyHash, NodeHash};

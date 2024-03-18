@@ -8,8 +8,10 @@ use core::fmt::{Debug, Display};
 pub mod stored;
 mod transaction;
 
-pub use transaction::nodes::{Branch, Leaf, Node, TrieRoot};
-pub use transaction::Transaction;
+pub use transaction::{
+    nodes::{Branch, Leaf, Node, TrieRoot},
+    Transaction,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct KeyHash(pub [u32; 8]);
