@@ -12,6 +12,7 @@ pub struct MemoryDb<V> {
 }
 
 impl<V> MemoryDb<V> {
+    #[inline]
     pub fn empty() -> Self {
         Self {
             leaves: RefCell::default(),
@@ -22,6 +23,7 @@ impl<V> MemoryDb<V> {
 impl<V: Clone> DatabaseGet<V> for MemoryDb<V> {
     type GetError = String;
 
+    #[inline]
     fn get(&self, hash: &NodeHash) -> Result<Node<Branch<NodeHash>, Leaf<V>>, Self::GetError> {
         self.leaves
             .borrow()
@@ -34,6 +36,7 @@ impl<V: Clone> DatabaseGet<V> for MemoryDb<V> {
 impl<V: Clone> DatabaseSet<V> for MemoryDb<V> {
     type SetError = String;
 
+    #[inline]
     fn set(
         &self,
         hash: NodeHash,

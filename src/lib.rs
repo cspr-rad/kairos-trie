@@ -1,4 +1,5 @@
 #![allow(clippy::type_complexity)]
+#![warn(clippy::missing_inline_in_public_items)]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
@@ -17,6 +18,7 @@ pub use transaction::{
 pub struct KeyHash(pub [u32; 8]);
 
 impl KeyHash {
+    #[inline]
     pub fn from_bytes(hash_key: &[u8; 32]) -> Self {
         let mut r = [0; 8];
 
@@ -28,6 +30,7 @@ impl KeyHash {
         Self(r)
     }
 
+    #[inline]
     pub fn to_bytes(&self) -> [u8; 32] {
         let mut r = [0; 32];
 
@@ -45,12 +48,14 @@ impl KeyHash {
 }
 
 impl From<&[u8; 32]> for KeyHash {
+    #[inline]
     fn from(hash_key: &[u8; 32]) -> Self {
         Self::from_bytes(hash_key)
     }
 }
 
 impl From<&KeyHash> for [u8; 32] {
+    #[inline]
     fn from(hash: &KeyHash) -> [u8; 32] {
         hash.to_bytes()
     }
@@ -76,6 +81,7 @@ impl AsRef<[u8]> for NodeHash {
 }
 
 impl Display for NodeHash {
+    #[inline]
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // TODO hex
         write!(f, "NodeHash({:?})", &self.bytes)

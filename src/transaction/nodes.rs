@@ -13,12 +13,14 @@ pub enum TrieRoot<T> {
 }
 
 impl From<NodeHash> for TrieRoot<NodeHash> {
+    #[inline]
     fn from(hash: NodeHash) -> Self {
         Self::Node(hash)
     }
 }
 
 impl From<Option<NodeHash>> for TrieRoot<NodeHash> {
+    #[inline]
     fn from(hash: Option<NodeHash>) -> Self {
         match hash {
             Some(hash) => Self::Node(hash),
@@ -28,6 +30,7 @@ impl From<Option<NodeHash>> for TrieRoot<NodeHash> {
 }
 
 impl From<TrieRoot<NodeHash>> for Option<NodeHash> {
+    #[inline]
     fn from(value: TrieRoot<NodeHash>) -> Self {
         match value {
             TrieRoot::Empty => None,
@@ -58,12 +61,14 @@ pub enum NodeRef<V> {
 }
 
 impl<V> From<Box<Branch<NodeRef<V>>>> for NodeRef<V> {
+    #[inline]
     fn from(branch: Box<Branch<NodeRef<V>>>) -> Self {
         NodeRef::ModBranch(branch)
     }
 }
 
 impl<V> From<Box<Leaf<V>>> for NodeRef<V> {
+    #[inline]
     fn from(leaf: Box<Leaf<V>>) -> Self {
         NodeRef::ModLeaf(leaf)
     }
@@ -75,18 +80,21 @@ pub struct StoredLeafRef<'s, V> {
 }
 
 impl<'s, V> From<StoredLeafRef<'s, V>> for NodeRef<V> {
+    #[inline]
     fn from(leaf: StoredLeafRef<'s, V>) -> Self {
         NodeRef::Stored(leaf.stored)
     }
 }
 
 impl<'s, V> AsRef<Leaf<V>> for StoredLeafRef<'s, V> {
+    #[inline]
     fn as_ref(&self) -> &Leaf<V> {
         self.leaf
     }
 }
 
 impl<'s, V> StoredLeafRef<'s, V> {
+    #[inline]
     pub fn new(leaf: &'s Leaf<V>, stored: stored::Idx) -> Self {
         Self { leaf, stored }
     }
@@ -102,6 +110,7 @@ pub struct BranchMask {
 }
 
 impl BranchMask {
+    #[inline]
     const fn new(word_idx: u32, a: u32, b: u32) -> Self {
         let diff = a ^ b;
         let relative_bit_idx = diff.trailing_zeros();
@@ -272,6 +281,7 @@ impl<NR> Branch<NR> {
         }
     }
 
+    #[inline]
     pub fn hash_branch(&self, left: &NodeHash, right: &NodeHash) -> NodeHash {
         let mut hasher = Sha256::new();
 
@@ -290,6 +300,7 @@ impl<NR> Branch<NR> {
 }
 
 impl<V> Branch<NodeRef<V>> {
+    #[inline]
     pub fn new_at_branch(
         word_idx: usize,
         branch_word_or_prefix: u32,
@@ -370,6 +381,7 @@ impl<V> Branch<NodeRef<V>> {
     ///
     /// # Panics
     /// Panics if the keys are the same.
+    #[inline]
     pub fn new_from_leafs(
         prefix_start_idx: usize,
         old_leaf: impl AsRef<Leaf<V>> + Into<NodeRef<V>>,

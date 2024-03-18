@@ -22,6 +22,7 @@ impl<'a, Db: DatabaseSet<V>, V: Clone + AsRef<[u8]>> Transaction<SnapshotBuilder
     /// Calling this method again will rewrite the nodes to the database.
     ///
     /// Caching writes is the responsibility of the `DatabaseSet` implementation.
+    #[inline]
     pub fn commit(&self) -> Result<TrieRoot<NodeHash>, String> {
         let store_modified_branch =
             &mut |hash: &NodeHash, branch: &Branch<NodeRef<V>>, left: NodeHash, right: NodeHash| {
@@ -53,6 +54,7 @@ impl<'a, Db: DatabaseSet<V>, V: Clone + AsRef<[u8]>> Transaction<SnapshotBuilder
 
 impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
     /// TODO a version of this that writes to the database.
+    #[inline]
     pub fn calc_root_hash_inner(
         &self,
         on_modified_branch: &mut impl FnMut(
@@ -76,11 +78,13 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
         Ok(TrieRoot::Node(root_hash))
     }
 
+    #[inline]
     pub fn calc_root_hash(&self) -> Result<TrieRoot<NodeHash>, String> {
         self.calc_root_hash_inner(&mut |_, _, _, _| Ok(()), &mut |_, _| Ok(()))
     }
 
     /// TODO use this to store nodes in the data base
+    #[inline]
     fn calc_root_hash_node(
         data_store: &S,
         node_ref: &NodeRef<V>,
@@ -129,6 +133,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
         }
     }
 
+    #[inline]
     pub fn get(&self, key_hash: &KeyHash) -> Result<Option<&V>, String> {
         match &self.current_root {
             TrieRoot::Empty => Ok(None),
@@ -136,6 +141,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
         }
     }
 
+    #[inline]
     pub fn get_node<'root, 's: 'root>(
         data_store: &'s S,
         mut node_ref: &'root NodeRef<V>,
@@ -165,6 +171,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
         }
     }
 
+    #[inline]
     pub fn get_stored_node<'s>(
         data_store: &'s S,
         mut stored_idx: stored::Idx,
@@ -202,6 +209,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
         }
     }
 
+    #[inline]
     pub fn insert(&mut self, key_hash: &KeyHash, value: V) -> Result<(), String> {
         match &mut self.current_root {
             TrieRoot::Empty => {
@@ -217,6 +225,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
         }
     }
 
+    #[inline]
     fn insert_node(
         data_store: &mut S,
         root: &mut NodeRef<V>,
@@ -291,6 +300,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
         }
     }
 
+    #[inline]
     fn insert_below_branch(
         data_store: &mut S,
         mut branch: &mut Box<Branch<NodeRef<V>>>,
@@ -417,6 +427,7 @@ impl<'a, Db, V> Transaction<SnapshotBuilder<'a, Db, V>, V> {
     /// Because of this, two `Snapshot`s of the same trie may not be equal if the transactions differ.
     ///
     /// Note: All operations including get affect the contents of the snapshot.
+    #[inline]
     pub fn build_initial_snapshot(&self) -> Snapshot<V>
     where
         V: Clone,
@@ -424,6 +435,7 @@ impl<'a, Db, V> Transaction<SnapshotBuilder<'a, Db, V>, V> {
         self.data_store.build_initial_snapshot()
     }
 
+    #[inline]
     pub fn from_snapshot_builder(builder: SnapshotBuilder<'a, Db, V>) -> Self {
         Transaction {
             current_root: builder.trie_root(),
@@ -433,6 +445,7 @@ impl<'a, Db, V> Transaction<SnapshotBuilder<'a, Db, V>, V> {
 }
 
 impl<'s, V: AsRef<[u8]>> Transaction<&'s Snapshot<V>, V> {
+    #[inline]
     pub fn from_snapshot(snapshot: &'s Snapshot<V>) -> Result<Self, String> {
         Ok(Transaction {
             current_root: snapshot.trie_root()?,

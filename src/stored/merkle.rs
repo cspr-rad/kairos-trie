@@ -28,6 +28,7 @@ pub struct Snapshot<V> {
 }
 
 impl<V: AsRef<[u8]>> Snapshot<V> {
+    #[inline]
     pub fn root_node_idx(&self) -> Result<TrieRoot<Idx>> {
         // Revist this once https://github.com/rust-lang/rust/issues/37854 is stable
         match (
@@ -54,6 +55,7 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
         }
     }
 
+    #[inline]
     pub fn trie_root(&self) -> Result<TrieRoot<NodeRef<V>>> {
         match self.root_node_idx()? {
             TrieRoot::Node(idx) => Ok(TrieRoot::Node(NodeRef::Stored(idx))),
@@ -62,6 +64,7 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
     }
 
     /// Always check that the snapshot is of the merkle tree you expect.
+    #[inline]
     pub fn calc_root_hash(&self) -> Result<TrieRoot<NodeHash>> {
         match self.root_node_idx()? {
             TrieRoot::Node(idx) => Ok(TrieRoot::Node(self.calc_subtree_hash(idx)?)),
@@ -76,6 +79,7 @@ impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
     // TODO fix possible stack overflow
     // I dislike using an explicit mutable stack.
     // I have an idea for abusing async for high performance segmented stacks
+    #[inline]
     fn calc_subtree_hash(&self, node: Idx) -> Result<NodeHash> {
         let idx = node as usize;
         let leaf_offset = self.branches.len();
@@ -139,6 +143,7 @@ type NodeHashMaybeNode<'a, V> = (&'a NodeHash, Option<Node<&'a Branch<Idx>, &'a 
 impl<'a, Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<'a, Db, V> {
     type Error = Error;
 
+    #[inline]
     fn calc_subtree_hash(&self, hash_idx: Idx) -> Result<NodeHash, Self::Error> {
         let hash_idx = hash_idx as usize;
 
@@ -156,6 +161,7 @@ impl<'a, Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<'a, Db, V> {
             })
     }
 
+    #[inline]
     fn get_node(&self, hash_idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>, Self::Error> {
         let hash_idx = hash_idx as usize;
         let mut nodes = self.nodes.borrow_mut();
@@ -211,6 +217,7 @@ impl<'a, Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<'a, Db, V> {
 }
 
 impl<'a, Db, V> SnapshotBuilder<'a, Db, V> {
+    #[inline]
     pub fn empty(db: Db, bump: &'a Bump) -> Self {
         Self {
             db,
@@ -219,6 +226,7 @@ impl<'a, Db, V> SnapshotBuilder<'a, Db, V> {
         }
     }
 
+    #[inline]
     pub fn with_trie_root_hash(self, root_hash: TrieRoot<NodeHash>) -> Self {
         match root_hash {
             TrieRoot::Node(hash) => self.with_root_hash(hash),
@@ -226,12 +234,14 @@ impl<'a, Db, V> SnapshotBuilder<'a, Db, V> {
         }
     }
 
+    #[inline]
     pub fn with_root_hash(self, root_hash: NodeHash) -> Self {
         let root_hash = self.bump.alloc(root_hash);
         self.nodes.borrow_mut().push((&*root_hash, None));
         self
     }
 
+    #[inline]
     pub fn trie_root(&self) -> TrieRoot<NodeRef<V>> {
         match self.nodes.borrow().first() {
             Some(_) => TrieRoot::Node(NodeRef::Stored(0)),
@@ -239,6 +249,7 @@ impl<'a, Db, V> SnapshotBuilder<'a, Db, V> {
         }
     }
 
+    #[inline]
     pub fn build_initial_snapshot(&self) -> Snapshot<V>
     where
         V: Clone,
@@ -279,6 +290,7 @@ struct SnapshotBuilderFold<'v, 'a, V> {
 }
 
 impl<'v, 'a, V> SnapshotBuilderFold<'v, 'a, V> {
+    #[inline]
     fn new(nodes: &'v [NodeHashMaybeNode<'a, V>]) -> Self {
         let mut branch_count = 0;
         let mut leaf_count = 0;
@@ -303,24 +315,28 @@ impl<'v, 'a, V> SnapshotBuilderFold<'v, 'a, V> {
         }
     }
 
+    #[inline]
     fn push_branch(&mut self, branch: Branch<Idx>) -> Idx {
         let idx = self.branches.len() as Idx;
         self.branches.push(branch);
         idx
     }
 
+    #[inline]
     fn push_leaf(&mut self, leaf: Leaf<V>) -> Idx {
         let idx = self.leaves.len() as Idx;
         self.leaves.push(leaf);
         self.branch_count + idx
     }
 
+    #[inline]
     fn push_unvisited(&mut self, hash: NodeHash) -> Idx {
         let idx = self.unvisited_nodes.len() as Idx;
         self.unvisited_nodes.push(hash);
         self.branch_count + self.leaf_count + idx
     }
 
+    #[inline]
     fn fold(&mut self, node_idx: Idx) -> Idx
     where
         V: Clone,
@@ -345,6 +361,7 @@ impl<'v, 'a, V> SnapshotBuilderFold<'v, 'a, V> {
         }
     }
 
+    #[inline]
     fn build(self) -> Snapshot<V> {
         Snapshot {
             branches: self.branches.into_boxed_slice(),

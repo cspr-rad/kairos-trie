@@ -41,6 +41,7 @@ pub trait DatabaseGet<V> {
 impl<V, D: DatabaseGet<V>> DatabaseGet<V> for &D {
     type GetError = D::GetError;
 
+    #[inline]
     fn get(&self, hash: &NodeHash) -> Result<Node<Branch<NodeHash>, Leaf<V>>, Self::GetError> {
         (**self).get(hash)
     }
@@ -59,6 +60,7 @@ pub trait DatabaseSet<V>: DatabaseGet<V> {
 impl<V, D: DatabaseSet<V>> DatabaseSet<V> for &D {
     type SetError = D::SetError;
 
+    #[inline]
     fn set(
         &self,
         hash: NodeHash,
