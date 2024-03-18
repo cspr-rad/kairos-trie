@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use kairos_trie::{
     stored::{
         merkle::{Snapshot, SnapshotBuilder},
-        DatabaseSet, NodeHash,
+        DatabaseSet,
     },
-    KeyHash, Transaction, TrieRoot,
+    KeyHash, NodeHash, Transaction, TrieRoot,
 };
 
 pub fn run_against_snapshot_builder<Db: DatabaseSet<[u8; 8]>>(

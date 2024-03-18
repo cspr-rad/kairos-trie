@@ -3,7 +3,10 @@ use core::{cell::RefCell, ops::Deref};
 use alloc::{boxed::Box, format, string::String, vec::Vec};
 use bumpalo::Bump;
 
-use crate::{Branch, Leaf, NodeRef, TrieRoot};
+use crate::{
+    transaction::nodes::{NodeRef, TrieRoot},
+    Branch, Leaf,
+};
 
 use super::{DatabaseGet, Idx, Node, NodeHash, Store};
 

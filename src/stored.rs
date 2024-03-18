@@ -1,10 +1,12 @@
 pub mod memory_db;
 pub mod merkle;
 
-use alloc::fmt::Debug;
-use core::{fmt::Display, hash::Hash};
+use core::fmt::Display;
 
-use crate::{Branch, Leaf};
+use crate::{
+    transaction::nodes::{Branch, Leaf, Node},
+    NodeHash,
+};
 
 pub type Idx = u32;
 
@@ -63,37 +65,5 @@ impl<V, D: DatabaseSet<V>> DatabaseSet<V> for &D {
         node: Node<Branch<NodeHash>, Leaf<V>>,
     ) -> Result<(), Self::GetError> {
         (**self).set(hash, node)
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum Node<B, L> {
-    Branch(B),
-    Leaf(L),
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub struct NodeHash {
-    pub bytes: [u8; 32],
-}
-
-impl NodeHash {
-    #[inline]
-    pub fn new(bytes: [u8; 32]) -> Self {
-        Self { bytes }
-    }
-}
-
-impl AsRef<[u8]> for NodeHash {
-    #[inline]
-    fn as_ref(&self) -> &[u8] {
-        &self.bytes
-    }
-}
-
-impl Display for NodeHash {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        // TODO hex
-        write!(f, "NodeHash({:?})", &self.bytes)
     }
 }

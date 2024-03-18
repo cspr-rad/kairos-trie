@@ -1,10 +1,10 @@
+use alloc::{collections::BTreeMap, format, string::String};
 use core::cell::RefCell;
 
-use alloc::{collections::BTreeMap, format, string::String};
-
-use crate::{Branch, Leaf};
-
-use super::{DatabaseGet, DatabaseSet, Node, NodeHash};
+use crate::{
+    stored::{DatabaseGet, DatabaseSet, Node, NodeHash},
+    Branch, Leaf,
+};
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct MemoryDb<V> {
