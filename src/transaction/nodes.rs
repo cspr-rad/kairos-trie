@@ -312,13 +312,17 @@ impl<V> Branch<NodeRef<V>> {
         }
     }
 
-    #[inline]
-    pub(crate) fn new_at_branch(
+    /// Store a new leaf adjacent to an existing branch.
+    /// New branch will be stored in the old branch's Box.
+    /// The old branch will be moved to a new Box, under the new branch.
+    // inline(always) is used to increace the odds of the compiler removing the return when unused.
+    #[inline(always)]
+    pub(crate) fn new_at_branch_ret(
         word_idx: usize,
         branch_word_or_prefix: u32,
         branch: &mut Box<Self>,
         leaf: Box<Leaf<V>>,
-    ) {
+    ) -> &mut Leaf<V> {
         debug_assert!(word_idx < 8);
 
         let leaf_word = leaf.key_hash.0[word_idx];
@@ -375,21 +379,31 @@ impl<V> Branch<NodeRef<V>> {
 
         let old_branch = mem::replace(branch, new_parent);
 
-        if mask.is_left_descendant(leaf_word) {
+        let r = if mask.is_left_descendant(leaf_word) {
             debug_assert!(!mask.is_right_descendant(leaf_word));
 
             branch.left = NodeRef::ModLeaf(leaf);
             branch.right = NodeRef::ModBranch(old_branch);
+
+            &mut branch.left
         } else {
             debug_assert!(mask.is_right_descendant(leaf_word));
             debug_assert!(!mask.is_left_descendant(leaf_word));
 
             branch.left = NodeRef::ModBranch(old_branch);
             branch.right = NodeRef::ModLeaf(leaf);
+
+            &mut branch.right
         };
+
+        match r {
+            NodeRef::ModLeaf(leaf) => leaf,
+            _ => unreachable!(),
+        }
     }
 
     /// Create a new branch above two leafs.
+    /// Returns the new branch and a bool indicating if the new leaf is the right child.
     ///
     /// # Panics
     /// Panics if the keys are the same.
@@ -398,7 +412,7 @@ impl<V> Branch<NodeRef<V>> {
         prefix_start_idx: usize,
         old_leaf: impl AsRef<Leaf<V>> + Into<NodeRef<V>>,
         new_leaf: Box<Leaf<V>>,
-    ) -> Box<Self> {
+    ) -> (Box<Self>, bool) {
         let Some((word_idx, (a, b))) = iter::zip(new_leaf.key_hash.0, old_leaf.as_ref().key_hash.0)
             .enumerate()
             .skip(prefix_start_idx)
@@ -424,13 +438,13 @@ impl<V> Branch<NodeRef<V>> {
 
         let mask = BranchMask::new(word_idx as u32, a, b);
 
-        let (left, right) = if mask.is_left_descendant(a) {
+        let (left, right, is_right) = if mask.is_left_descendant(a) {
             debug_assert!(!mask.is_right_descendant(a));
 
             debug_assert!(mask.is_right_descendant(b));
             debug_assert!(!mask.is_left_descendant(b));
 
-            (new_leaf.into(), old_leaf.into())
+            (new_leaf.into(), old_leaf.into(), false)
         } else {
             debug_assert!(mask.is_right_descendant(a));
             debug_assert!(!mask.is_left_descendant(a));
@@ -438,16 +452,20 @@ impl<V> Branch<NodeRef<V>> {
             debug_assert!(mask.is_left_descendant(b));
             debug_assert!(!mask.is_right_descendant(b));
 
-            (old_leaf.into(), new_leaf.into())
+            (old_leaf.into(), new_leaf.into(), true)
         };
 
-        Box::new(Branch {
-            left,
-            right,
-            mask,
-            prior_word,
-            prefix,
-        })
+        (
+            Box::new(Branch {
+                left,
+                right,
+                mask,
+                prior_word,
+                prefix,
+            }),
+            // TODO use an enum
+            is_right,
+        )
     }
 }
 

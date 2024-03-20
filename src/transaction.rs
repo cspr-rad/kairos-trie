@@ -1,11 +1,11 @@
 pub(crate) mod nodes;
 
 use alloc::{boxed::Box, format, string::String};
-use core::{mem, ops::Deref};
+use core::mem;
 
 use crate::stored::{
     merkle::{Snapshot, SnapshotBuilder},
-    DatabaseSet, Store,
+    DatabaseSet, Store, UnreachableStore,
 };
 use crate::{stored, KeyHash, NodeHash};
 
@@ -130,7 +130,9 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
             }),
         }
     }
+}
 
+impl<S: Store<V>, V> Transaction<S, V> {
     #[inline]
     pub fn get(&self, key_hash: &KeyHash) -> Result<Option<&V>, String> {
         match &self.current_root {
@@ -218,18 +220,18 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                 Ok(())
             }
             TrieRoot::Node(node_ref) => {
-                Self::insert_node(&mut self.data_store, node_ref, key_hash, value)
+                Self::insert_node(&mut self.data_store, node_ref, key_hash, value).map(|_| ())
             }
         }
     }
 
-    #[inline]
-    fn insert_node(
-        data_store: &mut S,
-        mut node_ref: &mut NodeRef<V>,
+    #[inline(always)]
+    fn insert_node<'root, 's: 'root>(
+        data_store: &'s mut S,
+        mut node_ref: &'root mut NodeRef<V>,
         key_hash: &KeyHash,
         value: V,
-    ) -> Result<(), String> {
+    ) -> Result<&'root mut Leaf<V>, String> {
         loop {
             match node_ref {
                 NodeRef::ModBranch(branch) => match branch.descend(key_hash) {
@@ -242,7 +244,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                         continue;
                     }
                     KeyPosition::PrefixWord => {
-                        Branch::new_at_branch(
+                        let leaf = Branch::new_at_branch_ret(
                             branch.mask.word_idx(),
                             branch.mask.left_prefix,
                             branch,
@@ -252,10 +254,10 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                             }),
                         );
 
-                        return Ok(());
+                        return Ok(leaf);
                     }
                     KeyPosition::PriorWord => {
-                        Branch::new_at_branch(
+                        let leaf = Branch::new_at_branch_ret(
                             branch.mask.word_idx() - 1,
                             branch.prior_word,
                             branch,
@@ -265,14 +267,14 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                             }),
                         );
 
-                        return Ok(());
+                        return Ok(leaf);
                     }
                     KeyPosition::PrefixVec {
                         word_idx,
                         branch_word,
                         key_word: _,
                     } => {
-                        Branch::new_at_branch(
+                        let leaf = Branch::new_at_branch_ret(
                             word_idx,
                             branch_word,
                             branch,
@@ -282,27 +284,45 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                             }),
                         );
 
-                        return Ok(());
+                        return Ok(leaf);
                     }
                 },
                 NodeRef::ModLeaf(leaf) => {
                     if leaf.key_hash == *key_hash {
                         leaf.value = value;
-                        return Ok(());
+                        break;
                     } else {
                         let old_leaf = mem::replace(node_ref, NodeRef::Stored(0));
                         let NodeRef::ModLeaf(old_leaf) = old_leaf else {
                             unreachable!("We just matched a ModLeaf");
                         };
-                        *node_ref = NodeRef::ModBranch(Branch::new_from_leafs(
-                            0,
-                            old_leaf,
-                            Box::new(Leaf {
-                                key_hash: *key_hash,
-                                value,
-                            }),
-                        ));
-                        return Ok(());
+                        let new_leaf = Box::new(Leaf {
+                            key_hash: *key_hash,
+                            value,
+                        });
+                        let (new_branch, new_leaf_is_right) =
+                            Branch::new_from_leafs(0, old_leaf, new_leaf);
+                        *node_ref = NodeRef::ModBranch(new_branch);
+
+                        match node_ref {
+                            NodeRef::ModBranch(branch) => {
+                                let leaf = if new_leaf_is_right {
+                                    &mut branch.right
+                                } else {
+                                    &mut branch.left
+                                };
+
+                                match leaf {
+                                    NodeRef::ModLeaf(ref mut leaf) => {
+                                        return Ok(leaf);
+                                    }
+                                    _ => unreachable!(
+                                        "new_from_leafs returns the location of the new leaf"
+                                    ),
+                                }
+                            }
+                            _ => unreachable!("new_from_leafs returns a ModBranch"),
+                        }
                     }
                 }
                 NodeRef::Stored(stored_idx) => {
@@ -327,9 +347,9 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                                     key_hash: *key_hash,
                                     value,
                                 }));
-                                return Ok(());
+                                break;
                             } else {
-                                *node_ref = NodeRef::ModBranch(Branch::new_from_leafs(
+                                let (new_branch, _) = Branch::new_from_leafs(
                                     // TODO we can use the most recent branch.word_idx - 1
                                     // not sure if it's worth it, 0 is always correct.
                                     0,
@@ -338,13 +358,20 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                                         key_hash: *key_hash,
                                         value,
                                     }),
-                                ));
-                                return Ok(());
+                                );
+
+                                *node_ref = NodeRef::ModBranch(new_branch);
+                                break;
                             }
                         }
                     }
                 }
             }
+        }
+
+        match node_ref {
+            NodeRef::ModLeaf(leaf) => Ok(leaf),
+            _ => unreachable!("Prior loop only breaks on a leaf"),
         }
     }
 }
@@ -357,110 +384,83 @@ impl<S: Store<V>, V: AsRef<[u8]> + Clone> Transaction<S, V> {
     /// This will incures allocations, now and unessisary rehashing later when calculating the root hash.
     /// For this reason you should prefer `get` if you have a high probability of not modifying the entry.
     #[inline]
-    pub fn entry_(&mut self, key_hash: &KeyHash) -> Result<Entry<'_, V>, String> {
+    pub fn entry<'txn>(&'txn mut self, key_hash: &KeyHash) -> Result<Entry<'txn, V>, String> {
         match self.current_root {
             TrieRoot::Empty => Ok(Entry::VacantEmptyTrie(VacantEntryEmptyTrie {
                 root: &mut self.current_root,
                 key_hash: *key_hash,
             })),
-            TrieRoot::Node(ref mut node_ref) => {
-                // Self::entry_node(&mut self.data_store, node_ref, key_hash)
-                todo!()
-            }
-        }
-    }
+            TrieRoot::Node(ref mut root) => {
+                let mut node_ref = root;
+                loop {
+                    let go_right = match &*node_ref {
+                        NodeRef::ModBranch(branch) => match branch.descend(key_hash) {
+                            KeyPosition::Left => false,
+                            KeyPosition::Right => true,
+                            _ => break,
+                        },
+                        NodeRef::ModLeaf(_) => break,
+                        NodeRef::Stored(idx) => {
+                            let loaded_node = self.data_store.get_node(*idx).map_err(|e| {
+                                format!(
+                                    "Error in `entry` at {file}:{line}:{column}: could not get stored node: {e}",
+                                    file = file!(),
+                                    line = line!(),
+                                    column = column!(),
+                                )
+                            })?;
 
-    #[inline]
-    pub fn entry(&mut self, key_hash: &KeyHash) -> Result<Entry<'_, V>, String> {
-        let node_ref = &mut self.current_root;
-
-        match self.current_root {
-            TrieRoot::Empty => Ok(Entry::VacantEmptyTrie(VacantEntryEmptyTrie {
-                root: &mut self.current_root,
-                key_hash: *key_hash,
-            })),
-            TrieRoot::Node(ref mut node_ref) => {
-                todo!()
-            }
-        }
-    }
-
-    #[inline]
-    fn entry_node<'root, 's: 'root>(
-        data_store: &'s mut S,
-        root_ref: &'root mut TrieRoot<NodeRef<V>>,
-        key_hash: &KeyHash,
-    ) -> Result<Entry<'root, V>, String> {
-        let root = mem::take(root_ref);
-        loop {
-            match root {
-                // TODO check the duplicated call to descend is optimized out.
-                // If it's not figured out another way to satisfy the borrow checker.
-                TrieRoot::Node(NodeRef::ModBranch(branch))
-                    if matches!(branch.descend(key_hash), KeyPosition::Left) =>
-                {
-                    root = TrieRoot::Node(branch.left)
-                }
-                TrieRoot::Node(NodeRef::ModBranch(branch))
-                    if matches!(branch.descend(key_hash), KeyPosition::Right) =>
-                {
-                    root = TrieRoot::Node(branch.right)
-                }
-
-                TrieRoot::Node(NodeRef::ModBranch(_)) => {
-                    break;
-                }
-
-                TrieRoot::Node(NodeRef::ModLeaf(leaf)) if &leaf.key_hash == key_hash => {
-                    break;
-                }
-                TrieRoot::Node(NodeRef::ModLeaf(_)) => {
-                    break;
-                }
-                TrieRoot::Node(node_ref @ NodeRef::Stored(_)) => {
-                    let loaded_node = data_store.get_node(1).map_err(|e| {
-                        format!(
-                            "Error in `entry_node`: {e} at {file}:{line}:{column}",
-                            file = file!(),
-                            line = line!(),
-                            column = column!()
-                        )
-                    })?;
-
-                    match loaded_node {
-                        Node::Branch(loaded_branch) => {
-                            // Connect the new branch to the trie.
-                            *node_ref =
-                                NodeRef::ModBranch(Box::new(Branch::from_stored(loaded_branch)));
-                            break;
+                            match loaded_node {
+                                Node::Branch(branch) => {
+                                    // Connect the new branch to the trie.
+                                    *node_ref =
+                                        NodeRef::ModBranch(Box::new(Branch::from_stored(branch)));
+                                }
+                                Node::Leaf(leaf) => {
+                                    *node_ref = NodeRef::ModLeaf(Box::new(leaf.clone()));
+                                }
+                            }
+                            continue;
                         }
-                        Node::Leaf(loaded_leaf) if loaded_leaf.key_hash == *key_hash => {
-                            // Connect the new leaf to the trie.
-                            *node_ref = NodeRef::ModLeaf(Box::new(loaded_leaf.clone()));
+                    };
 
-                            break;
+                    match (go_right, node_ref) {
+                        (true, NodeRef::ModBranch(ref mut branch)) => {
+                            node_ref = &mut branch.right;
                         }
-
-                        Node::Leaf(_leaf) => {
-                            debug_assert_ne!(_leaf.key_hash, *key_hash);
-
-                            break;
+                        (false, NodeRef::ModBranch(ref mut branch)) => {
+                            node_ref = &mut branch.left;
                         }
+                        _ => unreachable!("We just matched a ModBranch"),
                     }
                 }
-                TrieRoot::Empty => {
-                    break;
+
+                // This convoluted return makes the borrow checker happy.
+                if let NodeRef::ModLeaf(leaf) = &*node_ref {
+                    if leaf.key_hash != *key_hash {
+                        return Ok(Entry::Vacant(VacantEntry {
+                            parent: node_ref,
+                            key_hash: *key_hash,
+                        }));
+                    }
+                };
+
+                if let NodeRef::ModBranch(_) = &*node_ref {
+                    Ok(Entry::Vacant(VacantEntry {
+                        parent: node_ref,
+                        key_hash: *key_hash,
+                    }))
+                } else if let NodeRef::ModLeaf(leaf) = &mut *node_ref {
+                    Ok(Entry::Occupied(OccupiedEntry { leaf }))
+                } else {
+                    unreachable!("prior loop only breaks on a leaf or branch");
                 }
-            };
+            }
         }
-
-        *root_ref = root;
-
-        todo!()
     }
 }
 
-impl<'a, Db, V> Transaction<SnapshotBuilder<'a, Db, V>, V> {
+impl<'a, Db, V: AsRef<[u8]> + Clone> Transaction<SnapshotBuilder<'a, Db, V>, V> {
     /// An alias for `SnapshotBuilder::new_with_db`.
     ///
     /// Builds a snapshot of the trie before the transaction.
@@ -470,10 +470,7 @@ impl<'a, Db, V> Transaction<SnapshotBuilder<'a, Db, V>, V> {
     ///
     /// Note: All operations including get affect the contents of the snapshot.
     #[inline]
-    pub fn build_initial_snapshot(&self) -> Snapshot<V>
-    where
-        V: Clone,
-    {
+    pub fn build_initial_snapshot(&self) -> Snapshot<V> {
         self.data_store.build_initial_snapshot()
     }
 
@@ -486,7 +483,7 @@ impl<'a, Db, V> Transaction<SnapshotBuilder<'a, Db, V>, V> {
     }
 }
 
-impl<'s, V: AsRef<[u8]>> Transaction<&'s Snapshot<V>, V> {
+impl<'s, V: AsRef<[u8]> + Clone> Transaction<&'s Snapshot<V>, V> {
     #[inline]
     pub fn from_snapshot(snapshot: &'s Snapshot<V>) -> Result<Self, String> {
         Ok(Transaction {
@@ -505,7 +502,16 @@ pub enum Entry<'a, V> {
 }
 
 pub struct OccupiedEntry<'a, V> {
+    /// This always points to a Leaf.
+    /// It may be a ModLeaf or a stored Leaf.
     leaf: &'a mut Leaf<V>,
+}
+
+impl<'a, V> OccupiedEntry<'a, V> {
+    #[inline]
+    pub fn key(&self) -> &KeyHash {
+        &self.leaf.key_hash
+    }
 }
 
 pub struct VacantEntry<'a, V> {
@@ -522,7 +528,7 @@ impl<'a, V> Entry<'a, V> {
     #[inline]
     pub fn or_insert(self, value: V) -> &'a mut V {
         match self {
-            Entry::Occupied(occupied) => &mut occupied.leaf.value,
+            Entry::Occupied(o) => &mut o.leaf.value,
             Entry::VacantEmptyTrie(VacantEntryEmptyTrie { root, key_hash }) => {
                 *root = TrieRoot::Node(NodeRef::ModLeaf(Box::new(Leaf { key_hash, value })));
 
@@ -531,7 +537,14 @@ impl<'a, V> Entry<'a, V> {
                     _ => unreachable!("We just set root to a ModLeaf"),
                 }
             }
-            Entry::Vacant(VacantEntry { parent, key_hash }) => todo!(),
+            Entry::Vacant(VacantEntry { parent, key_hash }) => {
+                // unwrap is safe since insert_node only fails from Store errors.
+                // UnreachableStore is a Store that panics on any operation.
+                //
+                // We use UnreachableStore because `entry` loads the entire path until it det
+                let leaf = Transaction::insert_node(&mut UnreachableStore, parent, &key_hash, value).unwrap();
+                
+            }
         }
     }
 
@@ -554,10 +567,8 @@ impl<'a, V> Entry<'a, V> {
     #[inline]
     pub fn key(&self) -> &KeyHash {
         match self {
-            Entry::Occupied(OccupiedEntry {
-                leaf: Leaf { key_hash, .. },
-            })
-            | Entry::Vacant(VacantEntry { key_hash, .. })
+            Entry::Occupied(OccupiedEntry { leaf }) => &leaf.key_hash,
+            Entry::Vacant(VacantEntry { key_hash, .. })
             | Entry::VacantEmptyTrie(VacantEntryEmptyTrie { key_hash, .. }) => key_hash,
         }
     }
