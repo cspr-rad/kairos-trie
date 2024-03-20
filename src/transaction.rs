@@ -5,7 +5,7 @@ use core::mem;
 
 use crate::stored::{
     merkle::{Snapshot, SnapshotBuilder},
-    DatabaseSet, Store, UnreachableStore,
+    DatabaseSet, Store,
 };
 use crate::{stored, KeyHash, NodeHash};
 
@@ -220,7 +220,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
                 Ok(())
             }
             TrieRoot::Node(node_ref) => {
-                Self::insert_node(&mut self.data_store, node_ref, key_hash, value).map(|_| ())
+                Self::insert_node(&mut self.data_store, node_ref, key_hash, value)
             }
         }
     }
@@ -231,7 +231,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
         mut node_ref: &'root mut NodeRef<V>,
         key_hash: &KeyHash,
         value: V,
-    ) -> Result<&'root mut Leaf<V>, String> {
+    ) -> Result<(), String> {
         loop {
             match node_ref {
                 NodeRef::ModBranch(branch) => match branch.descend(key_hash) {
@@ -244,7 +244,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
                         continue;
                     }
                     KeyPosition::PrefixWord => {
-                        let leaf = Branch::new_at_branch_ret(
+                        Branch::new_at_branch(
                             branch.mask.word_idx(),
                             branch.mask.left_prefix,
                             branch,
@@ -254,10 +254,10 @@ impl<S: Store<V>, V> Transaction<S, V> {
                             }),
                         );
 
-                        return Ok(leaf);
+                        return Ok(());
                     }
                     KeyPosition::PriorWord => {
-                        let leaf = Branch::new_at_branch_ret(
+                        Branch::new_at_branch(
                             branch.mask.word_idx() - 1,
                             branch.prior_word,
                             branch,
@@ -267,14 +267,14 @@ impl<S: Store<V>, V> Transaction<S, V> {
                             }),
                         );
 
-                        return Ok(leaf);
+                        return Ok(());
                     }
                     KeyPosition::PrefixVec {
                         word_idx,
                         branch_word,
                         key_word: _,
                     } => {
-                        let leaf = Branch::new_at_branch_ret(
+                        Branch::new_at_branch(
                             word_idx,
                             branch_word,
                             branch,
@@ -284,13 +284,14 @@ impl<S: Store<V>, V> Transaction<S, V> {
                             }),
                         );
 
-                        return Ok(leaf);
+                        return Ok(());
                     }
                 },
                 NodeRef::ModLeaf(leaf) => {
                     if leaf.key_hash == *key_hash {
                         leaf.value = value;
-                        break;
+
+                        return Ok(());
                     } else {
                         let old_leaf = mem::replace(node_ref, NodeRef::Stored(0));
                         let NodeRef::ModLeaf(old_leaf) = old_leaf else {
@@ -300,29 +301,11 @@ impl<S: Store<V>, V> Transaction<S, V> {
                             key_hash: *key_hash,
                             value,
                         });
-                        let (new_branch, new_leaf_is_right) =
-                            Branch::new_from_leafs(0, old_leaf, new_leaf);
+
+                        let (new_branch, _) = Branch::new_from_leafs(0, old_leaf, new_leaf);
+
                         *node_ref = NodeRef::ModBranch(new_branch);
-
-                        match node_ref {
-                            NodeRef::ModBranch(branch) => {
-                                let leaf = if new_leaf_is_right {
-                                    &mut branch.right
-                                } else {
-                                    &mut branch.left
-                                };
-
-                                match leaf {
-                                    NodeRef::ModLeaf(ref mut leaf) => {
-                                        return Ok(leaf);
-                                    }
-                                    _ => unreachable!(
-                                        "new_from_leafs returns the location of the new leaf"
-                                    ),
-                                }
-                            }
-                            _ => unreachable!("new_from_leafs returns a ModBranch"),
-                        }
+                        return Ok(());
                     }
                 }
                 NodeRef::Stored(stored_idx) => {
@@ -347,7 +330,8 @@ impl<S: Store<V>, V> Transaction<S, V> {
                                     key_hash: *key_hash,
                                     value,
                                 }));
-                                break;
+
+                                return Ok(());
                             } else {
                                 let (new_branch, _) = Branch::new_from_leafs(
                                     // TODO we can use the most recent branch.word_idx - 1
@@ -361,17 +345,12 @@ impl<S: Store<V>, V> Transaction<S, V> {
                                 );
 
                                 *node_ref = NodeRef::ModBranch(new_branch);
-                                break;
+                                return Ok(());
                             }
                         }
                     }
                 }
             }
-        }
-
-        match node_ref {
-            NodeRef::ModLeaf(leaf) => Ok(leaf),
-            _ => unreachable!("Prior loop only breaks on a leaf"),
         }
     }
 }
@@ -519,49 +498,109 @@ pub struct VacantEntry<'a, V> {
     key_hash: KeyHash,
 }
 
+impl<'a, V> VacantEntry<'a, V> {
+    #[inline]
+    pub fn key(&self) -> &KeyHash {
+        &self.key_hash
+    }
+
+    #[inline]
+    pub fn insert(self, value: V) -> &'a mut V {
+        let VacantEntry { parent, key_hash } = self;
+        if let NodeRef::ModBranch(branch) = parent {
+            debug_assert!(matches!(branch.descend(&key_hash), KeyPosition::PrefixWord));
+
+            let leaf = Branch::new_at_branch_ret(
+                branch.mask.word_idx(),
+                branch.mask.left_prefix,
+                branch,
+                Box::new(Leaf { key_hash, value }),
+            );
+            return &mut leaf.value;
+        };
+
+        let owned_parent = mem::replace(parent, NodeRef::Stored(0));
+        match owned_parent {
+            NodeRef::ModLeaf(old_leaf) => {
+                let (new_branch, new_leaf_is_right) =
+                    Branch::new_from_leafs(0, old_leaf, Box::new(Leaf { key_hash, value }));
+
+                *parent = NodeRef::ModBranch(new_branch);
+
+                match parent {
+                    NodeRef::ModBranch(branch) => {
+                        let leaf = if new_leaf_is_right {
+                            &mut branch.right
+                        } else {
+                            &mut branch.left
+                        };
+
+                        match leaf {
+                            NodeRef::ModLeaf(ref mut leaf) => &mut leaf.value,
+                            _ => {
+                                unreachable!("new_from_leafs returns the location of the new leaf")
+                            }
+                        }
+                    }
+                    _ => unreachable!("new_from_leafs returns a ModBranch"),
+                }
+            }
+            _ => {
+                unreachable!("`entry` ensures VacantEntry should never point to a Stored node")
+            }
+        }
+    }
+}
+
 pub struct VacantEntryEmptyTrie<'a, V> {
     root: &'a mut TrieRoot<NodeRef<V>>,
     key_hash: KeyHash,
 }
 
+impl<'a, V> VacantEntryEmptyTrie<'a, V> {
+    #[inline]
+    pub fn key(&self) -> &KeyHash {
+        &self.key_hash
+    }
+}
+
 impl<'a, V> Entry<'a, V> {
     #[inline]
     pub fn or_insert(self, value: V) -> &'a mut V {
+        self.or_insert_with(|| value)
+    }
+
+    #[inline]
+    pub fn or_insert_with<F>(self, default: F) -> &'a mut V
+    where
+        F: FnOnce() -> V,
+    {
+        self.or_insert_with_key(|_| default())
+    }
+
+    #[inline]
+    pub fn or_insert_with_key<F>(self, default: F) -> &'a mut V
+    where
+        F: FnOnce(&KeyHash) -> V,
+    {
         match self {
             Entry::Occupied(o) => &mut o.leaf.value,
             Entry::VacantEmptyTrie(VacantEntryEmptyTrie { root, key_hash }) => {
-                *root = TrieRoot::Node(NodeRef::ModLeaf(Box::new(Leaf { key_hash, value })));
+                *root = TrieRoot::Node(NodeRef::ModLeaf(Box::new(Leaf {
+                    key_hash,
+                    value: default(&key_hash),
+                })));
 
                 match root {
                     TrieRoot::Node(NodeRef::ModLeaf(leaf)) => &mut leaf.value,
                     _ => unreachable!("We just set root to a ModLeaf"),
                 }
             }
-            Entry::Vacant(VacantEntry { parent, key_hash }) => {
-                // unwrap is safe since insert_node only fails from Store errors.
-                // UnreachableStore is a Store that panics on any operation.
-                //
-                // We use UnreachableStore because `entry` loads the entire path until it det
-                let leaf = Transaction::insert_node(&mut UnreachableStore, parent, &key_hash, value).unwrap();
-                
+            Entry::Vacant(entry) => {
+                let value = default(entry.key());
+                entry.insert(value)
             }
         }
-    }
-
-    #[inline]
-    pub fn or_insert_with<F>(self, value: F) -> &'a mut V
-    where
-        F: FnOnce() -> V,
-    {
-        todo!()
-    }
-
-    #[inline]
-    pub fn and_modify<F>(self, f: F) -> Self
-    where
-        F: FnOnce(&mut V),
-    {
-        todo!()
     }
 
     #[inline]
@@ -571,5 +610,27 @@ impl<'a, V> Entry<'a, V> {
             Entry::Vacant(VacantEntry { key_hash, .. })
             | Entry::VacantEmptyTrie(VacantEntryEmptyTrie { key_hash, .. }) => key_hash,
         }
+    }
+    #[inline]
+    pub fn and_modify<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(&mut V),
+    {
+        match self {
+            Entry::Occupied(OccupiedEntry { ref mut leaf }) => {
+                f(&mut leaf.value);
+                self
+            }
+            _ => self,
+        }
+    }
+
+    #[inline]
+    pub fn or_default(self) -> &'a mut V
+    where
+        V: Default,
+    {
+        #[allow(clippy::unwrap_or_default)]
+        self.or_insert_with(Default::default)
     }
 }

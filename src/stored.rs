@@ -32,23 +32,6 @@ impl<V, S: Store<V>> Store<V> for &S {
     }
 }
 
-/// A `Store` that always panics when accessed.
-pub(crate) struct UnreachableStore;
-
-impl<V> Store<V> for UnreachableStore {
-    type Error = core::convert::Infallible;
-
-    #[inline(always)]
-    fn calc_subtree_hash(&self, _hash_idx: Idx) -> Result<NodeHash, Self::Error> {
-        unreachable!("UnreachableStore")
-    }
-
-    #[inline(always)]
-    fn get_node(&self, _hash_idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>, Self::Error> {
-        unreachable!("UnreachableStore")
-    }
-}
-
 pub trait DatabaseGet<V> {
     type GetError: Display;
 

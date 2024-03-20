@@ -312,6 +312,18 @@ impl<V> Branch<NodeRef<V>> {
         }
     }
 
+    /// A wrapper around `new_at_branch_ret` which returns nothing.
+    /// This exists to aid compiler inlining.
+    #[inline]
+    pub(crate) fn new_at_branch(
+        word_idx: usize,
+        branch_word_or_prefix: u32,
+        branch: &mut Box<Self>,
+        leaf: Box<Leaf<V>>,
+    ) {
+        Self::new_at_branch_ret(word_idx, branch_word_or_prefix, branch, leaf);
+    }
+
     /// Store a new leaf adjacent to an existing branch.
     /// New branch will be stored in the old branch's Box.
     /// The old branch will be moved to a new Box, under the new branch.
