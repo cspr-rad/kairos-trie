@@ -3,5 +3,4 @@
 #### TODO
 
 - delete node method
-- update node method
 - documentation
