@@ -1,7 +1,7 @@
 pub(crate) mod nodes;
 
 use alloc::{boxed::Box, format, string::String};
-use core::mem;
+use core::{mem, ops::Deref};
 
 use crate::stored::{
     merkle::{Snapshot, SnapshotBuilder},
@@ -53,7 +53,6 @@ impl<'a, Db: DatabaseSet<V>, V: Clone + AsRef<[u8]>> Transaction<SnapshotBuilder
 }
 
 impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
-    /// TODO a version of this that writes to the database.
     #[inline]
     pub fn calc_root_hash_inner(
         &self,
@@ -83,7 +82,6 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
         self.calc_root_hash_inner(&mut |_, _, _, _| Ok(()), &mut |_, _| Ok(()))
     }
 
-    /// TODO use this to store nodes in the data base
     #[inline]
     fn calc_root_hash_node(
         data_store: &S,
@@ -360,12 +358,17 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                 NodeRef::ModBranch(next_branch) => {
                     branch = next_branch;
                 }
-                NodeRef::ModLeaf(_) => {
+                NodeRef::ModLeaf(leaf) if &leaf.key_hash == key_hash => {
+                    leaf.value = value;
+                    return Ok(());
+                }
+                NodeRef::ModLeaf(_leaf) => {
                     let old_next = mem::replace(next, NodeRef::Stored(0));
                     let NodeRef::ModLeaf(leaf) = old_next else {
                         unreachable!("We just matched a ModLeaf");
                     };
 
+                    debug_assert_ne!(leaf.key_hash, *key_hash);
                     *next = NodeRef::ModBranch(Branch::new_from_leafs(
                         branch.mask.word_idx().saturating_sub(1),
                         leaf,
@@ -384,15 +387,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                         .map_err(|e| format!("Error in `insert_below_branch`: {e}"))?;
                     match new_node {
                         Node::Branch(new_branch) => {
-                            *next = NodeRef::ModBranch(Box::new(Branch {
-                                left: NodeRef::Stored(new_branch.left),
-                                right: NodeRef::Stored(new_branch.right),
-                                mask: new_branch.mask,
-                                // TODO remove the clone
-                                // Maybe use a AsRef<[u32]> instead of Vec<u32>
-                                prior_word: new_branch.prior_word,
-                                prefix: new_branch.prefix.clone(),
-                            }));
+                            *next = NodeRef::ModBranch(Box::new(Branch::from_stored(new_branch)));
 
                             let NodeRef::ModBranch(next_branch) = next else {
                                 unreachable!("We just set next to a ModBranch");
@@ -400,7 +395,16 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
 
                             branch = next_branch;
                         }
+
+                        Node::Leaf(leaf) if leaf.key_hash == *key_hash => {
+                            *next = NodeRef::ModLeaf(Box::new(Leaf {
+                                key_hash: *key_hash,
+                                value,
+                            }));
+                            return Ok(());
+                        }
                         Node::Leaf(leaf) => {
+                            debug_assert_ne!(leaf.key_hash, *key_hash);
                             *next = NodeRef::ModBranch(Branch::new_from_leafs(
                                 branch.mask.word_idx().saturating_sub(1),
                                 StoredLeafRef::new(leaf, *stored_idx),
@@ -415,6 +419,117 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                 }
             }
         }
+    }
+}
+
+impl<S: Store<V>, V: AsRef<[u8]> + Clone> Transaction<S, V> {
+    /// This method allows for getting, inserting, and updating a entry in the trie with a single lookup.
+    /// We match the standard library's `Entry` API for the most part.
+    ///
+    /// Note: Use of `entry` renders the trie path even if the entry is not modified.
+    /// This will incures allocations, now and unessisary rehashing later when calculating the root hash.
+    /// For this reason you should prefer `get` if you have a high probability of not modifying the entry.
+    #[inline]
+    pub fn entry_(&mut self, key_hash: &KeyHash) -> Result<Entry<'_, V>, String> {
+        match self.current_root {
+            TrieRoot::Empty => Ok(Entry::VacantEmptyTrie(VacantEntryEmptyTrie {
+                root: &mut self.current_root,
+                key_hash: *key_hash,
+            })),
+            TrieRoot::Node(ref mut node_ref) => {
+                // Self::entry_node(&mut self.data_store, node_ref, key_hash)
+                todo!()
+            }
+        }
+    }
+
+    #[inline]
+    pub fn entry(&mut self, key_hash: &KeyHash) -> Result<Entry<'_, V>, String> {
+        let node_ref = &mut self.current_root;
+
+        match self.current_root {
+            TrieRoot::Empty => Ok(Entry::VacantEmptyTrie(VacantEntryEmptyTrie {
+                root: &mut self.current_root,
+                key_hash: *key_hash,
+            })),
+            TrieRoot::Node(ref mut node_ref) => {
+                todo!()
+            }
+        }
+    }
+
+    #[inline]
+    fn entry_node<'root, 's: 'root>(
+        data_store: &'s mut S,
+        root_ref: &'root mut TrieRoot<NodeRef<V>>,
+        key_hash: &KeyHash,
+    ) -> Result<Entry<'root, V>, String> {
+        let root = mem::take(root_ref);
+        loop {
+            match root {
+                // TODO check the duplicated call to descend is optimized out.
+                // If it's not figured out another way to satisfy the borrow checker.
+                TrieRoot::Node(NodeRef::ModBranch(branch))
+                    if matches!(branch.descend(key_hash), KeyPosition::Left) =>
+                {
+                    root = TrieRoot::Node(branch.left)
+                }
+                TrieRoot::Node(NodeRef::ModBranch(branch))
+                    if matches!(branch.descend(key_hash), KeyPosition::Right) =>
+                {
+                    root = TrieRoot::Node(branch.right)
+                }
+
+                TrieRoot::Node(NodeRef::ModBranch(_)) => {
+                    break;
+                }
+
+                TrieRoot::Node(NodeRef::ModLeaf(leaf)) if &leaf.key_hash == key_hash => {
+                    break;
+                }
+                TrieRoot::Node(NodeRef::ModLeaf(_)) => {
+                    break;
+                }
+                TrieRoot::Node(node_ref @ NodeRef::Stored(_)) => {
+                    let loaded_node = data_store.get_node(1).map_err(|e| {
+                        format!(
+                            "Error in `entry_node`: {e} at {file}:{line}:{column}",
+                            file = file!(),
+                            line = line!(),
+                            column = column!()
+                        )
+                    })?;
+
+                    match loaded_node {
+                        Node::Branch(loaded_branch) => {
+                            // Connect the new branch to the trie.
+                            *node_ref =
+                                NodeRef::ModBranch(Box::new(Branch::from_stored(loaded_branch)));
+                            break;
+                        }
+                        Node::Leaf(loaded_leaf) if loaded_leaf.key_hash == *key_hash => {
+                            // Connect the new leaf to the trie.
+                            *node_ref = NodeRef::ModLeaf(Box::new(loaded_leaf.clone()));
+
+                            break;
+                        }
+
+                        Node::Leaf(_leaf) => {
+                            debug_assert_ne!(_leaf.key_hash, *key_hash);
+
+                            break;
+                        }
+                    }
+                }
+                TrieRoot::Empty => {
+                    break;
+                }
+            };
+        }
+
+        *root_ref = root;
+
+        todo!()
     }
 }
 
@@ -451,5 +566,72 @@ impl<'s, V: AsRef<[u8]>> Transaction<&'s Snapshot<V>, V> {
             current_root: snapshot.trie_root()?,
             data_store: snapshot,
         })
+    }
+}
+
+pub enum Entry<'a, V> {
+    /// A Leaf
+    Occupied(OccupiedEntry<'a, V>),
+    /// The first Branch that proves the key is not in the trie.
+    Vacant(VacantEntry<'a, V>),
+    VacantEmptyTrie(VacantEntryEmptyTrie<'a, V>),
+}
+
+pub struct OccupiedEntry<'a, V> {
+    leaf: &'a mut Leaf<V>,
+}
+
+pub struct VacantEntry<'a, V> {
+    parent: &'a mut NodeRef<V>,
+    key_hash: KeyHash,
+}
+
+pub struct VacantEntryEmptyTrie<'a, V> {
+    root: &'a mut TrieRoot<NodeRef<V>>,
+    key_hash: KeyHash,
+}
+
+impl<'a, V> Entry<'a, V> {
+    #[inline]
+    pub fn or_insert(self, value: V) -> &'a mut V {
+        match self {
+            Entry::Occupied(occupied) => &mut occupied.leaf.value,
+            Entry::VacantEmptyTrie(VacantEntryEmptyTrie { root, key_hash }) => {
+                *root = TrieRoot::Node(NodeRef::ModLeaf(Box::new(Leaf { key_hash, value })));
+
+                match root {
+                    TrieRoot::Node(NodeRef::ModLeaf(leaf)) => &mut leaf.value,
+                    _ => unreachable!("We just set root to a ModLeaf"),
+                }
+            }
+            Entry::Vacant(VacantEntry { parent, key_hash }) => todo!(),
+        }
+    }
+
+    #[inline]
+    pub fn or_insert_with<F>(self, value: F) -> &'a mut V
+    where
+        F: FnOnce() -> V,
+    {
+        todo!()
+    }
+
+    #[inline]
+    pub fn and_modify<F>(self, f: F) -> Self
+    where
+        F: FnOnce(&mut V),
+    {
+        todo!()
+    }
+
+    #[inline]
+    pub fn key(&self) -> &KeyHash {
+        match self {
+            Entry::Occupied(OccupiedEntry {
+                leaf: Leaf { key_hash, .. },
+            })
+            | Entry::Vacant(VacantEntry { key_hash, .. })
+            | Entry::VacantEmptyTrie(VacantEntryEmptyTrie { key_hash, .. }) => key_hash,
+        }
     }
 }

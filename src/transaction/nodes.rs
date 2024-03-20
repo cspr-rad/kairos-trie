@@ -300,8 +300,20 @@ impl<NR> Branch<NR> {
 }
 
 impl<V> Branch<NodeRef<V>> {
+    pub(crate) fn from_stored(branch: &Branch<stored::Idx>) -> Branch<NodeRef<V>> {
+        Branch {
+            left: NodeRef::Stored(branch.left),
+            right: NodeRef::Stored(branch.right),
+            mask: branch.mask,
+            prior_word: branch.prior_word,
+            // TODO remove the clone
+            // Maybe use a AsRef<[u32]> instead of Vec<u32>
+            prefix: branch.prefix.clone(),
+        }
+    }
+
     #[inline]
-    pub fn new_at_branch(
+    pub(crate) fn new_at_branch(
         word_idx: usize,
         branch_word_or_prefix: u32,
         branch: &mut Box<Self>,
@@ -382,7 +394,7 @@ impl<V> Branch<NodeRef<V>> {
     /// # Panics
     /// Panics if the keys are the same.
     #[inline]
-    pub fn new_from_leafs(
+    pub(crate) fn new_from_leafs(
         prefix_start_idx: usize,
         old_leaf: impl AsRef<Leaf<V>> + Into<NodeRef<V>>,
         new_leaf: Box<Leaf<V>>,
