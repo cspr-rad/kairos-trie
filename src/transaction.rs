@@ -226,194 +226,121 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
     #[inline]
     fn insert_node(
         data_store: &mut S,
-        root: &mut NodeRef<V>,
-        key_hash: &KeyHash,
-        value: V,
-    ) -> Result<(), String> {
-        match root {
-            NodeRef::ModBranch(branch) => {
-                Self::insert_below_branch(data_store, branch, key_hash, value)
-            }
-            NodeRef::ModLeaf(leaf) => {
-                if leaf.key_hash == *key_hash {
-                    leaf.value = value;
-                    Ok(())
-                } else {
-                    let old_leaf = mem::replace(root, NodeRef::Stored(0));
-                    let NodeRef::ModLeaf(old_leaf) = old_leaf else {
-                        unreachable!("We just matched a ModLeaf");
-                    };
-                    *root = NodeRef::ModBranch(Branch::new_from_leafs(
-                        0,
-                        old_leaf,
-                        Box::new(Leaf {
-                            key_hash: *key_hash,
-                            value,
-                        }),
-                    ));
-                    Ok(())
-                }
-            }
-            NodeRef::Stored(stored_idx) => {
-                let new_node = data_store.get_node(*stored_idx).map_err(|e| {
-                    format!("Error at `{}:{}:{}`: `{e}`", file!(), line!(), column!())
-                })?;
-                match new_node {
-                    Node::Branch(new_branch) => {
-                        *root = NodeRef::ModBranch(Box::new(Branch {
-                            left: NodeRef::Stored(new_branch.left),
-                            right: NodeRef::Stored(new_branch.right),
-                            mask: new_branch.mask,
-                            prior_word: new_branch.prior_word,
-                            prefix: new_branch.prefix.clone(),
-                        }));
-
-                        let NodeRef::ModBranch(branch) = root else {
-                            unreachable!("We just set root to a ModBranch");
-                        };
-
-                        Self::insert_below_branch(data_store, branch, key_hash, value)
-                    }
-                    Node::Leaf(leaf) => {
-                        if leaf.key_hash == *key_hash {
-                            *root = NodeRef::ModLeaf(Box::new(Leaf {
-                                key_hash: *key_hash,
-                                value,
-                            }));
-                            Ok(())
-                        } else {
-                            *root = NodeRef::ModBranch(Branch::new_from_leafs(
-                                0,
-                                StoredLeafRef::new(leaf, *stored_idx),
-                                Box::new(Leaf {
-                                    key_hash: *key_hash,
-                                    value,
-                                }),
-                            ));
-                            Ok(())
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    #[inline]
-    fn insert_below_branch(
-        data_store: &mut S,
-        mut branch: &mut Box<Branch<NodeRef<V>>>,
+        mut node_ref: &mut NodeRef<V>,
         key_hash: &KeyHash,
         value: V,
     ) -> Result<(), String> {
         loop {
-            let next = match branch.descend(key_hash) {
-                KeyPosition::Left => &mut branch.left,
-                KeyPosition::Right => &mut branch.right,
-                KeyPosition::PrefixWord => {
-                    Branch::new_at_branch(
-                        branch.mask.word_idx(),
-                        branch.mask.left_prefix,
-                        branch,
-                        Box::new(Leaf {
-                            key_hash: *key_hash,
-                            value,
-                        }),
-                    );
-
-                    return Ok(());
-                }
-                KeyPosition::PriorWord => {
-                    Branch::new_at_branch(
-                        branch.mask.word_idx() - 1,
-                        branch.prior_word,
-                        branch,
-                        Box::new(Leaf {
-                            key_hash: *key_hash,
-                            value,
-                        }),
-                    );
-
-                    return Ok(());
-                }
-                KeyPosition::PrefixVec {
-                    word_idx,
-                    branch_word,
-                    key_word: _,
-                } => {
-                    Branch::new_at_branch(
-                        word_idx,
-                        branch_word,
-                        branch,
-                        Box::new(Leaf {
-                            key_hash: *key_hash,
-                            value,
-                        }),
-                    );
-
-                    return Ok(());
-                }
-            };
-
-            match next {
-                NodeRef::ModBranch(next_branch) => {
-                    branch = next_branch;
-                }
-                NodeRef::ModLeaf(leaf) if &leaf.key_hash == key_hash => {
-                    leaf.value = value;
-                    return Ok(());
-                }
-                NodeRef::ModLeaf(_leaf) => {
-                    let old_next = mem::replace(next, NodeRef::Stored(0));
-                    let NodeRef::ModLeaf(leaf) = old_next else {
-                        unreachable!("We just matched a ModLeaf");
-                    };
-
-                    debug_assert_ne!(leaf.key_hash, *key_hash);
-                    *next = NodeRef::ModBranch(Branch::new_from_leafs(
-                        branch.mask.word_idx().saturating_sub(1),
-                        leaf,
-                        Box::new(Leaf {
-                            key_hash: *key_hash,
-                            value,
-                        }),
-                    ));
-
-                    return Ok(());
-                }
-                NodeRef::Stored(stored_idx) => {
-                    // TODO this is an artificial load of leaf.value.
-                    let new_node = data_store
-                        .get_node(*stored_idx)
-                        .map_err(|e| format!("Error in `insert_below_branch`: {e}"))?;
-                    match new_node {
-                        Node::Branch(new_branch) => {
-                            *next = NodeRef::ModBranch(Box::new(Branch::from_stored(new_branch)));
-
-                            let NodeRef::ModBranch(next_branch) = next else {
-                                unreachable!("We just set next to a ModBranch");
-                            };
-
-                            branch = next_branch;
-                        }
-
-                        Node::Leaf(leaf) if leaf.key_hash == *key_hash => {
-                            *next = NodeRef::ModLeaf(Box::new(Leaf {
+            match node_ref {
+                NodeRef::ModBranch(branch) => match branch.descend(key_hash) {
+                    KeyPosition::Left => {
+                        node_ref = &mut branch.left;
+                        continue;
+                    }
+                    KeyPosition::Right => {
+                        node_ref = &mut branch.right;
+                        continue;
+                    }
+                    KeyPosition::PrefixWord => {
+                        Branch::new_at_branch(
+                            branch.mask.word_idx(),
+                            branch.mask.left_prefix,
+                            branch,
+                            Box::new(Leaf {
                                 key_hash: *key_hash,
                                 value,
+                            }),
+                        );
+
+                        return Ok(());
+                    }
+                    KeyPosition::PriorWord => {
+                        Branch::new_at_branch(
+                            branch.mask.word_idx() - 1,
+                            branch.prior_word,
+                            branch,
+                            Box::new(Leaf {
+                                key_hash: *key_hash,
+                                value,
+                            }),
+                        );
+
+                        return Ok(());
+                    }
+                    KeyPosition::PrefixVec {
+                        word_idx,
+                        branch_word,
+                        key_word: _,
+                    } => {
+                        Branch::new_at_branch(
+                            word_idx,
+                            branch_word,
+                            branch,
+                            Box::new(Leaf {
+                                key_hash: *key_hash,
+                                value,
+                            }),
+                        );
+
+                        return Ok(());
+                    }
+                },
+                NodeRef::ModLeaf(leaf) => {
+                    if leaf.key_hash == *key_hash {
+                        leaf.value = value;
+                        return Ok(());
+                    } else {
+                        let old_leaf = mem::replace(node_ref, NodeRef::Stored(0));
+                        let NodeRef::ModLeaf(old_leaf) = old_leaf else {
+                            unreachable!("We just matched a ModLeaf");
+                        };
+                        *node_ref = NodeRef::ModBranch(Branch::new_from_leafs(
+                            0,
+                            old_leaf,
+                            Box::new(Leaf {
+                                key_hash: *key_hash,
+                                value,
+                            }),
+                        ));
+                        return Ok(());
+                    }
+                }
+                NodeRef::Stored(stored_idx) => {
+                    let new_node = data_store.get_node(*stored_idx).map_err(|e| {
+                        format!("Error at `{}:{}:{}`: `{e}`", file!(), line!(), column!())
+                    })?;
+                    match new_node {
+                        Node::Branch(new_branch) => {
+                            *node_ref = NodeRef::ModBranch(Box::new(Branch {
+                                left: NodeRef::Stored(new_branch.left),
+                                right: NodeRef::Stored(new_branch.right),
+                                mask: new_branch.mask,
+                                prior_word: new_branch.prior_word,
+                                prefix: new_branch.prefix.clone(),
                             }));
-                            return Ok(());
+
+                            continue;
                         }
                         Node::Leaf(leaf) => {
-                            debug_assert_ne!(leaf.key_hash, *key_hash);
-                            *next = NodeRef::ModBranch(Branch::new_from_leafs(
-                                branch.mask.word_idx().saturating_sub(1),
-                                StoredLeafRef::new(leaf, *stored_idx),
-                                Box::new(Leaf {
+                            if leaf.key_hash == *key_hash {
+                                *node_ref = NodeRef::ModLeaf(Box::new(Leaf {
                                     key_hash: *key_hash,
                                     value,
-                                }),
-                            ));
-                            return Ok(());
+                                }));
+                                return Ok(());
+                            } else {
+                                *node_ref = NodeRef::ModBranch(Branch::new_from_leafs(
+                                    // TODO we can use the most recent branch.word_idx - 1
+                                    // not sure if it's worth it, 0 is always correct.
+                                    0,
+                                    StoredLeafRef::new(leaf, *stored_idx),
+                                    Box::new(Leaf {
+                                        key_hash: *key_hash,
+                                        value,
+                                    }),
+                                ));
+                                return Ok(());
+                            }
                         }
                     }
                 }
