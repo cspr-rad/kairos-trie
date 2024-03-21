@@ -20,3 +20,4 @@ bumpalo = "3"
 
 [dev-dependencies]
 proptest = "1"
+proptest-derive = "0.4"

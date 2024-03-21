@@ -482,6 +482,14 @@ pub enum Entry<'a, V> {
 
 impl<'a, V> Entry<'a, V> {
     #[inline]
+    pub fn get(&self) -> Option<&V> {
+        match self {
+            Entry::Occupied(OccupiedEntry { leaf }) => Some(&leaf.value),
+            _ => None,
+        }
+    }
+
+    #[inline]
     pub fn or_insert(self, value: V) -> &'a mut V {
         self.or_insert_with(|| value)
     }

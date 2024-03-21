@@ -1,12 +1,14 @@
 mod utils;
 
-use proptest::prelude::*;
 use std::collections::HashMap;
+
+use proptest::prelude::*;
 
 use kairos_trie::{
     stored::{memory_db::MemoryDb, merkle::SnapshotBuilder},
     KeyHash, Transaction, TrieRoot,
 };
+use utils::insert_get::*;
 
 prop_compose! {
     fn arb_key_hash()(data in any::<[u8; 32]>()) -> KeyHash {
@@ -53,9 +55,8 @@ fn end_to_end_example(maps: Vec<HashMap<KeyHash, u64>>) {
     let mut prior_root_hash = TrieRoot::default();
 
     for map in maps.iter() {
-        let (new_root_hash, snapshot) =
-            utils::run_against_snapshot_builder(map, prior_root_hash, db);
-        utils::run_against_snapshot(map, snapshot, new_root_hash, prior_root_hash);
+        let (new_root_hash, snapshot) = run_against_snapshot_builder(map, prior_root_hash, db);
+        run_against_snapshot(map, snapshot, new_root_hash, prior_root_hash);
         prior_root_hash = new_root_hash;
     }
 
