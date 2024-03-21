@@ -11,7 +11,7 @@ mod transaction;
 
 pub use transaction::{
     nodes::{Branch, Leaf, Node, TrieRoot},
-    Transaction,
+    Entry, OccupiedEntry, Transaction, VacantEntry, VacantEntryEmptyTrie,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]

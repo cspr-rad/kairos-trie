@@ -480,6 +480,70 @@ pub enum Entry<'a, V> {
     VacantEmptyTrie(VacantEntryEmptyTrie<'a, V>),
 }
 
+impl<'a, V> Entry<'a, V> {
+    #[inline]
+    pub fn or_insert(self, value: V) -> &'a mut V {
+        self.or_insert_with(|| value)
+    }
+
+    #[inline]
+    pub fn or_insert_with<F>(self, default: F) -> &'a mut V
+    where
+        F: FnOnce() -> V,
+    {
+        self.or_insert_with_key(|_| default())
+    }
+
+    #[inline]
+    pub fn or_insert_with_key<F>(self, default: F) -> &'a mut V
+    where
+        F: FnOnce(&KeyHash) -> V,
+    {
+        match self {
+            Entry::Occupied(o) => &mut o.leaf.value,
+            Entry::VacantEmptyTrie(entry) => {
+                let value = default(entry.key());
+                entry.insert(value)
+            }
+            Entry::Vacant(entry) => {
+                let value = default(entry.key());
+                entry.insert(value)
+            }
+        }
+    }
+
+    #[inline]
+    pub fn key(&self) -> &KeyHash {
+        match self {
+            Entry::Occupied(OccupiedEntry { leaf }) => &leaf.key_hash,
+            Entry::Vacant(VacantEntry { key_hash, .. })
+            | Entry::VacantEmptyTrie(VacantEntryEmptyTrie { key_hash, .. }) => key_hash,
+        }
+    }
+    #[inline]
+    pub fn and_modify<F>(mut self, f: F) -> Self
+    where
+        F: FnOnce(&mut V),
+    {
+        match self {
+            Entry::Occupied(OccupiedEntry { ref mut leaf }) => {
+                f(&mut leaf.value);
+                self
+            }
+            _ => self,
+        }
+    }
+
+    #[inline]
+    pub fn or_default(self) -> &'a mut V
+    where
+        V: Default,
+    {
+        #[allow(clippy::unwrap_or_default)]
+        self.or_insert_with(Default::default)
+    }
+}
+
 pub struct OccupiedEntry<'a, V> {
     /// This always points to a Leaf.
     /// It may be a ModLeaf or a stored Leaf.
@@ -490,6 +554,26 @@ impl<'a, V> OccupiedEntry<'a, V> {
     #[inline]
     pub fn key(&self) -> &KeyHash {
         &self.leaf.key_hash
+    }
+
+    #[inline]
+    pub fn get(&self) -> &V {
+        &self.leaf.value
+    }
+
+    #[inline]
+    pub fn get_mut(&mut self) -> &mut V {
+        &mut self.leaf.value
+    }
+
+    #[inline]
+    pub fn into_mut(self) -> &'a mut V {
+        &mut self.leaf.value
+    }
+
+    #[inline]
+    pub fn insert(&mut self, value: V) -> V {
+        mem::replace(&mut self.leaf.value, value)
     }
 }
 
@@ -502,6 +586,11 @@ impl<'a, V> VacantEntry<'a, V> {
     #[inline]
     pub fn key(&self) -> &KeyHash {
         &self.key_hash
+    }
+
+    #[inline]
+    pub fn into_key(self) -> KeyHash {
+        self.key_hash
     }
 
     #[inline]
@@ -562,75 +651,20 @@ impl<'a, V> VacantEntryEmptyTrie<'a, V> {
     pub fn key(&self) -> &KeyHash {
         &self.key_hash
     }
-}
 
-impl<'a, V> Entry<'a, V> {
     #[inline]
-    pub fn or_insert(self, value: V) -> &'a mut V {
-        self.or_insert_with(|| value)
+    pub fn into_key(self) -> KeyHash {
+        self.key_hash
     }
 
     #[inline]
-    pub fn or_insert_with<F>(self, default: F) -> &'a mut V
-    where
-        F: FnOnce() -> V,
-    {
-        self.or_insert_with_key(|_| default())
-    }
+    pub fn insert(self, value: V) -> &'a mut V {
+        let VacantEntryEmptyTrie { root, key_hash } = self;
+        *root = TrieRoot::Node(NodeRef::ModLeaf(Box::new(Leaf { key_hash, value })));
 
-    #[inline]
-    pub fn or_insert_with_key<F>(self, default: F) -> &'a mut V
-    where
-        F: FnOnce(&KeyHash) -> V,
-    {
-        match self {
-            Entry::Occupied(o) => &mut o.leaf.value,
-            Entry::VacantEmptyTrie(VacantEntryEmptyTrie { root, key_hash }) => {
-                *root = TrieRoot::Node(NodeRef::ModLeaf(Box::new(Leaf {
-                    key_hash,
-                    value: default(&key_hash),
-                })));
-
-                match root {
-                    TrieRoot::Node(NodeRef::ModLeaf(leaf)) => &mut leaf.value,
-                    _ => unreachable!("We just set root to a ModLeaf"),
-                }
-            }
-            Entry::Vacant(entry) => {
-                let value = default(entry.key());
-                entry.insert(value)
-            }
+        match root {
+            TrieRoot::Node(NodeRef::ModLeaf(leaf)) => &mut leaf.value,
+            _ => unreachable!("We just set root to a ModLeaf"),
         }
-    }
-
-    #[inline]
-    pub fn key(&self) -> &KeyHash {
-        match self {
-            Entry::Occupied(OccupiedEntry { leaf }) => &leaf.key_hash,
-            Entry::Vacant(VacantEntry { key_hash, .. })
-            | Entry::VacantEmptyTrie(VacantEntryEmptyTrie { key_hash, .. }) => key_hash,
-        }
-    }
-    #[inline]
-    pub fn and_modify<F>(mut self, f: F) -> Self
-    where
-        F: FnOnce(&mut V),
-    {
-        match self {
-            Entry::Occupied(OccupiedEntry { ref mut leaf }) => {
-                f(&mut leaf.value);
-                self
-            }
-            _ => self,
-        }
-    }
-
-    #[inline]
-    pub fn or_default(self) -> &'a mut V
-    where
-        V: Default,
-    {
-        #[allow(clippy::unwrap_or_default)]
-        self.or_insert_with(Default::default)
     }
 }
