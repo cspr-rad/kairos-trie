@@ -8,13 +8,7 @@ use kairos_trie::{
     stored::{memory_db::MemoryDb, merkle::SnapshotBuilder},
     KeyHash, Transaction, TrieRoot,
 };
-use utils::insert_get::*;
-
-prop_compose! {
-    fn arb_key_hash()(data in any::<[u8; 32]>()) -> KeyHash {
-        KeyHash::from(&data)
-    }
-}
+use utils::{insert_get::*, *};
 
 prop_compose! {
     fn arb_hashmap()(

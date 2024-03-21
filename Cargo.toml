@@ -5,8 +5,10 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [features]
-default = ["std"]
+default = ["std", "proptest"]
 std = []
+proptest = ["dep:proptest", "dep:proptest-derive"]
+
 
 [profile.test]
 opt-level = 3
@@ -17,7 +19,7 @@ overflow-checks = true
 [dependencies]
 sha2 = "0.10"
 bumpalo = "3"
+proptest-derive = { version = "0.4", optional = true }
+proptest = { version = "1", optional = true }
 
 [dev-dependencies]
-proptest = "1"
-proptest-derive = "0.4"

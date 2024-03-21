@@ -9,7 +9,7 @@ use kairos_trie::{
     KeyHash, NodeHash, Transaction, TrieRoot,
 };
 
-type Value = [u8; 8];
+pub type Value = [u8; 8];
 pub enum Operation {
     Get(KeyHash),
     Insert(KeyHash, Value),
@@ -20,7 +20,7 @@ pub enum Operation {
 }
 
 // Code like this runs in the server.
-fn run_against_snapshot_builder(
+pub fn run_against_snapshot_builder(
     batch: &[Operation],
     old_root_hash: TrieRoot<NodeHash>,
     db: &MemoryDb<Value>,
