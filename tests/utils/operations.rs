@@ -1,4 +1,8 @@
+#![allow(unused)]
+
 use std::collections::{hash_map, HashMap};
+
+use proptest::{prelude::*, sample::SizeRange};
 
 use kairos_trie::{
     stored::{
@@ -9,14 +13,81 @@ use kairos_trie::{
     KeyHash, NodeHash, Transaction, TrieRoot,
 };
 
+use super::arb_key_hash;
+
 pub type Value = [u8; 8];
+
+#[derive(Debug, Clone, Copy)]
 pub enum Operation {
     Get(KeyHash),
     Insert(KeyHash, Value),
     EntryGet(KeyHash),
     EntryInsert(KeyHash, Value),
-    EntryAndModify(KeyHash, Value),
+    EntryAndModifyOrInsert(KeyHash, Value),
     EntryOrInsert(KeyHash, Value),
+}
+
+prop_compose! {
+    pub fn arb_value()(data in any::<[u8; 8]>()) -> Value {
+        data
+    }
+}
+
+prop_compose! {
+    pub fn arb_operations(key_count: impl Into<SizeRange>, op_count: impl Into<SizeRange>)
+                         (keys in prop::collection::vec(arb_key_hash(), key_count),
+                          ops in prop::collection::vec(
+                              (0..5u8,
+                               any::<prop::sample::Index>(),
+                               arb_value()
+                              ),
+                              op_count
+                            )
+                         ) -> Vec<Operation> {
+    ops.into_iter().map(|(op, idx, value)| {
+        let key = keys[idx.index(keys.len())];
+        match op {
+            0 => Operation::Get(key),
+            1 => Operation::Insert(key, value),
+            2 => Operation::EntryGet(key),
+            3 => Operation::EntryInsert(key, value),
+            4 => Operation::EntryAndModifyOrInsert(key, value),
+            5 => Operation::EntryOrInsert(key, value),
+            _ => unreachable!(),
+        }}).collect()
+    }
+}
+
+prop_compose! {
+    pub fn arb_batches(key_count: impl Into<SizeRange>, op_count: impl Into<SizeRange>, max_batch_count: usize, max_batch_size: usize)
+                      (
+                          ops in arb_operations(key_count, op_count),
+                          windows in prop::collection::vec(0..max_batch_size, max_batch_count - 1)
+                      ) -> Vec<Vec<Operation>> {
+                          arb_batches_inner(ops, windows)
+    }
+}
+
+fn arb_batches_inner(ops: Vec<Operation>, windows: Vec<usize>) -> Vec<Vec<Operation>> {
+    let mut batches = Vec::new();
+    let mut start = 0;
+
+    // Partition the operations into batches
+    for window_size in windows {
+        if start + window_size > ops.len() {
+            break;
+        }
+
+        batches.push(ops[start..start + window_size].to_vec());
+
+        start += window_size;
+    }
+
+    if start < ops.len() {
+        batches.push(ops[start..].to_vec());
+    }
+
+    batches
 }
 
 // Code like this runs in the server.
@@ -87,9 +158,12 @@ fn trie_op<S: Store<Value>>(
                 let new = v.insert(*value);
                 (None, Some(*new))
             }
-            kairos_trie::Entry::VacantEmptyTrie(_) => (None, None),
+            kairos_trie::Entry::VacantEmptyTrie(v) => {
+                let new = v.insert(*value);
+                (None, Some(*new))
+            }
         },
-        Operation::EntryAndModify(key, value) => {
+        Operation::EntryAndModifyOrInsert(key, value) => {
             let entry = txn.entry(key).unwrap();
             let mut old = None;
             let new = entry
@@ -141,7 +215,7 @@ fn hashmap_op(op: &Operation, map: &mut HashMap<KeyHash, Value>) -> (Option<Valu
                 (None, Some(*new))
             }
         },
-        Operation::EntryAndModify(key, value) => {
+        Operation::EntryAndModifyOrInsert(key, value) => {
             let entry = map.entry(*key);
             let mut old = None;
             let new = entry

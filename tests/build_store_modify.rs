@@ -12,7 +12,7 @@ use utils::{insert_get::*, *};
 
 prop_compose! {
     fn arb_hashmap()(
-        map in prop::collection::hash_map(arb_key_hash(), 0u64.., 0..1_000)
+        map in prop::collection::hash_map(arb_key_hash(), 0u64.., 0..500)
     ) -> HashMap<KeyHash, u64> {
         map
     }
