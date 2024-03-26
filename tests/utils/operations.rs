@@ -1,6 +1,9 @@
 #![allow(unused)]
 
-use std::collections::{hash_map, HashMap};
+use std::{
+    collections::{hash_map, HashMap},
+    rc::Rc,
+};
 
 use proptest::{prelude::*, sample::SizeRange};
 
@@ -94,11 +97,11 @@ fn arb_batches_inner(ops: Vec<Operation>, windows: Vec<usize>) -> Vec<Vec<Operat
 pub fn run_against_snapshot_builder(
     batch: &[Operation],
     old_root_hash: TrieRoot<NodeHash>,
-    db: &MemoryDb<Value>,
+    db: Rc<MemoryDb<Value>>,
     hash_map: &mut HashMap<KeyHash, Value>,
 ) -> (TrieRoot<NodeHash>, Snapshot<Value>) {
     let bump = bumpalo::Bump::new();
-    let builder = SnapshotBuilder::empty(db, &bump).with_trie_root_hash(old_root_hash);
+    let builder = SnapshotBuilder::empty(db).with_trie_root_hash(old_root_hash);
     let mut txn = Transaction::from_snapshot_builder(builder);
 
     for op in batch {

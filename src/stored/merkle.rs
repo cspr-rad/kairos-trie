@@ -2,6 +2,7 @@ use core::{cell::RefCell, ops::Deref};
 
 use alloc::{boxed::Box, format, string::String, vec::Vec};
 use bumpalo::Bump;
+use ouroboros::self_referencing;
 
 use crate::{
     transaction::nodes::{NodeRef, TrieRoot},
@@ -129,101 +130,111 @@ impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
     }
 }
 
-#[derive(Debug)]
-pub struct SnapshotBuilder<'a, Db, V> {
-    pub db: Db,
-    bump: &'a Bump,
-
-    /// The root of the trie is always at index 0
-    nodes: RefCell<Vec<(&'a NodeHash, Option<Node<&'a Branch<Idx>, &'a Leaf<V>>>)>>,
-}
-
 type NodeHashMaybeNode<'a, V> = (&'a NodeHash, Option<Node<&'a Branch<Idx>, &'a Leaf<V>>>);
 
-impl<'a, Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<'a, Db, V> {
+#[self_referencing]
+pub struct SnapshotBuilder<Db: 'static, V: 'static> {
+    db: Db,
+    bump: Bump,
+
+    /// The root of the trie is always at index 0
+    #[borrows(bump)]
+    #[not_covariant]
+    nodes: RefCell<Vec<NodeHashMaybeNode<'this, V>>>,
+}
+
+impl<Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<Db, V> {
     type Error = Error;
 
     #[inline]
     fn calc_subtree_hash(&self, hash_idx: Idx) -> Result<NodeHash, Self::Error> {
         let hash_idx = hash_idx as usize;
 
-        self.nodes
-            .borrow()
-            .get(hash_idx)
-            .map(|(hash, _)| **hash)
-            .ok_or_else(|| {
+        self.with_nodes(|nodes| {
+            let nodes = nodes.borrow();
+            nodes.get(hash_idx).map(|(hash, _)| **hash).ok_or_else(|| {
                 format!(
                     "Invalid snapshot: no unvisited node at index {}\n\
-                    SnapshotBuilder has {} nodes",
+                        SnapshotBuilder has {} nodes",
                     hash_idx,
-                    self.nodes.borrow().len()
+                    nodes.len()
                 )
             })
+        })
     }
 
     #[inline]
     fn get_node(&self, hash_idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>, Self::Error> {
         let hash_idx = hash_idx as usize;
-        let mut nodes = self.nodes.borrow_mut();
+        self.with(|this| {
+            let mut nodes = this.nodes.borrow_mut();
 
-        let Some((hash, o_node)) = nodes.get(hash_idx).map(|(hash, o_node)| (hash, *o_node)) else {
-            return Err(format!(
-                "Invalid snapshot: no node at index {}\n\
+            let Some((hash, o_node)) = nodes.get(hash_idx).map(|(hash, o_node)| (hash, *o_node))
+            else {
+                return Err(format!(
+                    "Invalid snapshot: no node at index {}\n\
                 SnapshotBuilder has {} nodes",
-                hash_idx,
-                nodes.len()
-            ));
-        };
+                    hash_idx,
+                    nodes.len()
+                ));
+            };
 
-        if let Some(node) = o_node {
-            return Ok(node);
-        }
+            if let Some(node) = o_node {
+                return Ok(node);
+            }
 
-        let node = self
-            .db
-            .get(hash)
-            .map_err(|e| format!("Error getting {hash} from database: `{e}`"))?;
+            let node = this
+                .db
+                .get(hash)
+                .map_err(|e| format!("Error getting {hash} from database: `{e}`"))?;
 
-        let node = match node {
-            Node::Branch(Branch {
-                mask,
-                left,
-                right,
-                prior_word,
-                prefix,
-            }) => {
-                let idx = nodes.len() as Idx;
-
-                let left = self.bump.alloc(left);
-                let right = self.bump.alloc(right);
-
-                nodes.push((&*left, None));
-                nodes.push((&*right, None));
-
-                Node::Branch(&*self.bump.alloc(Branch {
+            let node = match node {
+                Node::Branch(Branch {
                     mask,
-                    left: idx,
-                    right: idx + 1,
+                    left,
+                    right,
                     prior_word,
                     prefix,
-                }))
-            }
-            Node::Leaf(leaf) => Node::Leaf(&*self.bump.alloc(leaf)),
-        };
+                }) => {
+                    let idx = nodes.len() as Idx;
 
-        nodes[hash_idx].1 = Some(node);
-        Ok(node)
+                    let left = this.bump.alloc(left);
+                    let right = this.bump.alloc(right);
+
+                    nodes.push((&*left, None));
+                    nodes.push((&*right, None));
+
+                    Node::Branch(&*this.bump.alloc(Branch {
+                        mask,
+                        left: idx,
+                        right: idx + 1,
+                        prior_word,
+                        prefix,
+                    }))
+                }
+                Node::Leaf(leaf) => Node::Leaf(&*this.bump.alloc(leaf)),
+            };
+
+            nodes[hash_idx].1 = Some(node);
+            Ok(node)
+        })
     }
 }
 
-impl<'a, Db, V> SnapshotBuilder<'a, Db, V> {
+impl<Db, V> SnapshotBuilder<Db, V> {
     #[inline]
-    pub fn empty(db: Db, bump: &'a Bump) -> Self {
-        Self {
+    pub fn empty(db: Db) -> Self {
+        SnapshotBuilderBuilder {
             db,
-            bump,
-            nodes: RefCell::new(Vec::new()),
+            bump: Bump::new(),
+            nodes_builder: |_| RefCell::new(Vec::new()),
         }
+        .build()
+    }
+
+    #[inline]
+    pub fn db(&self) -> &Db {
+        self.borrow_db()
     }
 
     #[inline]
@@ -236,17 +247,19 @@ impl<'a, Db, V> SnapshotBuilder<'a, Db, V> {
 
     #[inline]
     pub fn with_root_hash(self, root_hash: NodeHash) -> Self {
-        let root_hash = self.bump.alloc(root_hash);
-        self.nodes.borrow_mut().push((&*root_hash, None));
+        self.with(|this| {
+            let root_hash = this.bump.alloc(root_hash);
+            this.nodes.borrow_mut().push((&*root_hash, None));
+        });
         self
     }
 
     #[inline]
     pub fn trie_root(&self) -> TrieRoot<NodeRef<V>> {
-        match self.nodes.borrow().first() {
+        self.with_nodes(|nodes| match nodes.borrow().first() {
             Some(_) => TrieRoot::Node(NodeRef::Stored(0)),
             None => TrieRoot::Empty,
-        }
+        })
     }
 
     #[inline]
@@ -254,25 +267,28 @@ impl<'a, Db, V> SnapshotBuilder<'a, Db, V> {
     where
         V: Clone,
     {
-        let nodes = self.nodes.borrow();
+        self.with_nodes(|nodes| {
+            let nodes = nodes.borrow();
+            if nodes.is_empty() {
+                Snapshot {
+                    branches: Box::new([]),
+                    leaves: Box::new([]),
+                    unvisited_nodes: Box::new([]),
+                }
+            } else {
+                let mut state = SnapshotBuilderFold::new(&nodes);
+                let root_idx = state.fold(0);
 
-        if nodes.is_empty() {
-            Snapshot {
-                branches: Box::new([]),
-                leaves: Box::new([]),
-                unvisited_nodes: Box::new([]),
+                debug_assert!(
+                    state.branches.is_empty() || root_idx == state.branches.len() as Idx - 1
+                );
+                debug_assert_eq!(state.branch_count, state.branches.len() as u32);
+                debug_assert_eq!(state.leaf_count, state.leaves.len() as u32);
+                debug_assert_eq!(state.unvisited_count, state.unvisited_nodes.len() as u32);
+
+                state.build()
             }
-        } else {
-            let mut state = SnapshotBuilderFold::new(&nodes);
-            let root_idx = state.fold(0);
-
-            debug_assert!(state.branches.is_empty() || root_idx == state.branches.len() as Idx - 1);
-            debug_assert_eq!(state.branch_count, state.branches.len() as u32);
-            debug_assert_eq!(state.leaf_count, state.leaves.len() as u32);
-            debug_assert_eq!(state.unvisited_count, state.unvisited_nodes.len() as u32);
-
-            state.build()
-        }
+        })
     }
 }
 

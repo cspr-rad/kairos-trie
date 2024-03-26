@@ -1,6 +1,6 @@
 mod utils;
 
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 use proptest::prelude::*;
 
@@ -44,21 +44,21 @@ fn end_to_end_example_dup_maps_0() {
 }
 
 fn end_to_end_example(maps: Vec<HashMap<KeyHash, u64>>) {
-    let db = &MemoryDb::<[u8; 8]>::empty();
+    let db = Rc::new(MemoryDb::<[u8; 8]>::empty());
 
     let mut prior_root_hash = TrieRoot::default();
 
     for map in maps.iter() {
-        let (new_root_hash, snapshot) = run_against_snapshot_builder(map, prior_root_hash, db);
+        let (new_root_hash, snapshot) =
+            run_against_snapshot_builder(map, prior_root_hash, db.clone());
         run_against_snapshot(map, snapshot, new_root_hash, prior_root_hash);
         prior_root_hash = new_root_hash;
     }
 
     let merged_map: HashMap<KeyHash, u64> = maps.into_iter().flat_map(|m| m.into_iter()).collect();
 
-    let bump = bumpalo::Bump::new();
     let txn = Transaction::from_snapshot_builder(
-        SnapshotBuilder::<_, [u8; 8]>::empty(db, &bump).with_trie_root_hash(prior_root_hash),
+        SnapshotBuilder::<_, [u8; 8]>::empty(db).with_trie_root_hash(prior_root_hash),
     );
 
     for (k, v) in merged_map.iter() {

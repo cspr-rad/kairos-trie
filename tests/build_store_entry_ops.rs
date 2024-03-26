@@ -1,5 +1,5 @@
 mod utils;
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 use proptest::prelude::*;
 
@@ -11,7 +11,7 @@ use utils::operations::*;
 
 fn end_to_end_entry_ops(batches: Vec<Vec<Operation>>) {
     // The persistent backing, likely rocksdb
-    let db = &MemoryDb::<[u8; 8]>::empty();
+    let db = Rc::new(MemoryDb::<[u8; 8]>::empty());
 
     // An empty trie root
     let mut prior_root_hash = TrieRoot::default();
@@ -23,7 +23,7 @@ fn end_to_end_entry_ops(batches: Vec<Vec<Operation>>) {
         eprintln!("Batch size: {}", batch.len());
         // We build a snapshot on the server.
         let (new_root_hash, snapshot) =
-            run_against_snapshot_builder(batch, prior_root_hash, db, &mut hash_map);
+            run_against_snapshot_builder(batch, prior_root_hash, db.clone(), &mut hash_map);
 
         // We verify the snapshot in a zkVM
         run_against_snapshot(batch, snapshot, new_root_hash, prior_root_hash);
@@ -33,9 +33,8 @@ fn end_to_end_entry_ops(batches: Vec<Vec<Operation>>) {
     }
 
     // After all batches are applied, the trie and the hashmap should be in sync
-    let bump = bumpalo::Bump::new();
     let txn = Transaction::from_snapshot_builder(
-        SnapshotBuilder::<_, [u8; 8]>::empty(db, &bump).with_trie_root_hash(prior_root_hash),
+        SnapshotBuilder::<_, [u8; 8]>::empty(db).with_trie_root_hash(prior_root_hash),
     );
 
     // Check that the trie and the hashmap are in sync

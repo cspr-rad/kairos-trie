@@ -10,13 +10,12 @@ use kairos_trie::{
     KeyHash, NodeHash, Transaction, TrieRoot,
 };
 
-pub fn run_against_snapshot_builder<Db: DatabaseSet<[u8; 8]>>(
+pub fn run_against_snapshot_builder<Db: 'static + DatabaseSet<[u8; 8]>>(
     new: &HashMap<KeyHash, u64>,
     old_root_hash: TrieRoot<NodeHash>,
     db: Db,
 ) -> (TrieRoot<NodeHash>, Snapshot<[u8; 8]>) {
-    let bump = bumpalo::Bump::new();
-    let builder = SnapshotBuilder::empty(db, &bump).with_trie_root_hash(old_root_hash);
+    let builder = SnapshotBuilder::empty(db).with_trie_root_hash(old_root_hash);
 
     let mut txn = Transaction::from_snapshot_builder(builder);
 

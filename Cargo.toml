@@ -19,6 +19,8 @@ overflow-checks = true
 [dependencies]
 sha2 = "0.10"
 bumpalo = "3"
+ouroboros = "0.18"
+
 proptest-derive = { version = "0.4", optional = true }
 proptest = { version = "1", optional = true }
 

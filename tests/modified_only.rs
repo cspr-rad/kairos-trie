@@ -25,8 +25,7 @@ fn insert_get_u64_round_trip() {
         })
         .collect();
 
-    let bump = bumpalo::Bump::new();
-    let builder = SnapshotBuilder::empty(MemoryDb::<Vec<u8>>::empty(), &bump);
+    let builder = SnapshotBuilder::empty(MemoryDb::<Vec<u8>>::empty());
 
     let mut txn = Transaction::from_snapshot_builder(builder);
 
@@ -53,8 +52,7 @@ proptest! {
     fn prop_insert_get_rand(
         keys in prop::collection::hash_map(arb_key_hash(), 0u64.., 0..100_000)
     ) {
-        let bump = bumpalo::Bump::new();
-        let builder = SnapshotBuilder::empty(MemoryDb::<[u8; 8]>::empty(), &bump);
+        let builder = SnapshotBuilder::empty(MemoryDb::<[u8; 8]>::empty());
 
         let mut txn = Transaction::from_snapshot_builder(builder);
 

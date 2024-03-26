@@ -13,10 +13,10 @@ use self::nodes::{Branch, KeyPosition, Leaf, Node, NodeRef, StoredLeafRef, TrieR
 
 pub struct Transaction<S, V> {
     data_store: S,
-    pub current_root: TrieRoot<NodeRef<V>>,
+    current_root: TrieRoot<NodeRef<V>>,
 }
 
-impl<'a, Db: DatabaseSet<V>, V: Clone + AsRef<[u8]>> Transaction<SnapshotBuilder<'a, Db, V>, V> {
+impl<'a, Db: DatabaseSet<V>, V: Clone + AsRef<[u8]>> Transaction<SnapshotBuilder<Db, V>, V> {
     /// Write modified nodes to the database and return the root hash.
     /// Calling this method will write all modified nodes to the database.
     /// Calling this method again will rewrite the nodes to the database.
@@ -35,14 +35,14 @@ impl<'a, Db: DatabaseSet<V>, V: Clone + AsRef<[u8]>> Transaction<SnapshotBuilder
                 };
 
                 self.data_store
-                    .db
+                    .db()
                     .set(*hash, Node::Branch(branch))
                     .map_err(|e| format!("Error writing branch {hash} to database: {e}"))
             };
 
         let store_modified_leaf = &mut |hash: &NodeHash, leaf: &Leaf<V>| {
             self.data_store
-                .db
+                .db()
                 .set(*hash, Node::Leaf(leaf.clone()))
                 .map_err(|e| format!("Error writing leaf {hash} to database: {e}"))
         };
@@ -439,7 +439,7 @@ impl<S: Store<V>, V: AsRef<[u8]> + Clone> Transaction<S, V> {
     }
 }
 
-impl<'a, Db, V: AsRef<[u8]> + Clone> Transaction<SnapshotBuilder<'a, Db, V>, V> {
+impl<'a, Db, V: AsRef<[u8]> + Clone> Transaction<SnapshotBuilder<Db, V>, V> {
     /// An alias for `SnapshotBuilder::new_with_db`.
     ///
     /// Builds a snapshot of the trie before the transaction.
@@ -454,7 +454,7 @@ impl<'a, Db, V: AsRef<[u8]> + Clone> Transaction<SnapshotBuilder<'a, Db, V>, V> 
     }
 
     #[inline]
-    pub fn from_snapshot_builder(builder: SnapshotBuilder<'a, Db, V>) -> Self {
+    pub fn from_snapshot_builder(builder: SnapshotBuilder<Db, V>) -> Self {
         Transaction {
             current_root: builder.trie_root(),
             data_store: builder,
