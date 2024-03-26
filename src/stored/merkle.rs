@@ -1,18 +1,17 @@
 use core::{cell::RefCell, ops::Deref};
 
-use alloc::{boxed::Box, format, string::String, vec::Vec};
+use alloc::{boxed::Box, format, vec::Vec};
 use bumpalo::Bump;
 use ouroboros::self_referencing;
 
 use crate::{
     transaction::nodes::{NodeRef, TrieRoot},
-    Branch, Leaf,
+    Branch, Leaf, TrieError,
 };
 
 use super::{DatabaseGet, Idx, Node, NodeHash, Store};
 
-type Error = String;
-type Result<T, E = Error> = core::result::Result<T, E>;
+type Result<T, E = TrieError> = core::result::Result<T, E>;
 
 /// A snapshot of the merkle trie
 ///
@@ -52,7 +51,8 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
                 self.branches.len(),
                 self.leaves.len(),
                 self.unvisited_nodes.len()
-            )),
+            )
+            .into()),
         }
     }
 
@@ -75,7 +75,7 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
 }
 
 impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
-    type Error = Error;
+    type Error = TrieError;
 
     // TODO fix possible stack overflow
     // I dislike using an explicit mutable stack.
@@ -103,7 +103,8 @@ impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
                 self.branches.len(),
                 self.leaves.len(),
                 self.unvisited_nodes.len(),
-            ))
+            )
+            .into())
         }
     }
 
@@ -125,7 +126,8 @@ impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
                 self.branches.len(),
                 self.leaves.len(),
                 self.unvisited_nodes.len(),
-            ))
+            )
+            .into())
         }
     }
 }
@@ -144,7 +146,7 @@ pub struct SnapshotBuilder<Db: 'static, V: 'static> {
 }
 
 impl<Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<Db, V> {
-    type Error = Error;
+    type Error = TrieError;
 
     #[inline]
     fn calc_subtree_hash(&self, hash_idx: Idx) -> Result<NodeHash, Self::Error> {
@@ -159,6 +161,7 @@ impl<Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<Db, V> {
                     hash_idx,
                     nodes.len()
                 )
+                .into()
             })
         })
     }
@@ -176,7 +179,8 @@ impl<Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<Db, V> {
                 SnapshotBuilder has {} nodes",
                     hash_idx,
                     nodes.len()
-                ));
+                )
+                .into());
             };
 
             if let Some(node) = o_node {

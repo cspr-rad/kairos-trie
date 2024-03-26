@@ -1,13 +1,16 @@
 pub(crate) mod nodes;
 
-use alloc::{boxed::Box, format, string::String};
+use alloc::{boxed::Box, format};
 use core::mem;
 
-use crate::stored::{
-    merkle::{Snapshot, SnapshotBuilder},
-    DatabaseSet, Store,
-};
 use crate::{stored, KeyHash, NodeHash};
+use crate::{
+    stored::{
+        merkle::{Snapshot, SnapshotBuilder},
+        DatabaseSet, Store,
+    },
+    TrieError,
+};
 
 use self::nodes::{Branch, KeyPosition, Leaf, Node, NodeRef, StoredLeafRef, TrieRoot};
 
@@ -16,14 +19,14 @@ pub struct Transaction<S, V> {
     current_root: TrieRoot<NodeRef<V>>,
 }
 
-impl<'a, Db: DatabaseSet<V>, V: Clone + AsRef<[u8]>> Transaction<SnapshotBuilder<Db, V>, V> {
+impl<Db: DatabaseSet<V>, V: Clone + AsRef<[u8]>> Transaction<SnapshotBuilder<Db, V>, V> {
     /// Write modified nodes to the database and return the root hash.
     /// Calling this method will write all modified nodes to the database.
     /// Calling this method again will rewrite the nodes to the database.
     ///
     /// Caching writes is the responsibility of the `DatabaseSet` implementation.
     #[inline]
-    pub fn commit(&self) -> Result<TrieRoot<NodeHash>, String> {
+    pub fn commit(&self) -> Result<TrieRoot<NodeHash>, TrieError> {
         let store_modified_branch =
             &mut |hash: &NodeHash, branch: &Branch<NodeRef<V>>, left: NodeHash, right: NodeHash| {
                 let branch = Branch {
@@ -37,14 +40,14 @@ impl<'a, Db: DatabaseSet<V>, V: Clone + AsRef<[u8]>> Transaction<SnapshotBuilder
                 self.data_store
                     .db()
                     .set(*hash, Node::Branch(branch))
-                    .map_err(|e| format!("Error writing branch {hash} to database: {e}"))
+                    .map_err(|e| format!("Error writing branch {hash} to database: {e}").into())
             };
 
         let store_modified_leaf = &mut |hash: &NodeHash, leaf: &Leaf<V>| {
             self.data_store
                 .db()
                 .set(*hash, Node::Leaf(leaf.clone()))
-                .map_err(|e| format!("Error writing leaf {hash} to database: {e}"))
+                .map_err(|e| format!("Error writing leaf {hash} to database: {e}").into())
         };
 
         let root_hash = self.calc_root_hash_inner(store_modified_branch, store_modified_leaf)?;
@@ -61,9 +64,9 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
             &Branch<NodeRef<V>>,
             NodeHash,
             NodeHash,
-        ) -> Result<(), String>,
-        on_modified_leaf: &mut impl FnMut(&NodeHash, &Leaf<V>) -> Result<(), String>,
-    ) -> Result<TrieRoot<NodeHash>, String> {
+        ) -> Result<(), TrieError>,
+        on_modified_leaf: &mut impl FnMut(&NodeHash, &Leaf<V>) -> Result<(), TrieError>,
+    ) -> Result<TrieRoot<NodeHash>, TrieError> {
         let root_hash = match &self.current_root {
             TrieRoot::Empty => return Ok(TrieRoot::Empty),
             TrieRoot::Node(node_ref) => Self::calc_root_hash_node(
@@ -78,7 +81,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
     }
 
     #[inline]
-    pub fn calc_root_hash(&self) -> Result<TrieRoot<NodeHash>, String> {
+    pub fn calc_root_hash(&self) -> Result<TrieRoot<NodeHash>, TrieError> {
         self.calc_root_hash_inner(&mut |_, _, _, _| Ok(()), &mut |_, _| Ok(()))
     }
 
@@ -86,14 +89,14 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
     fn calc_root_hash_node(
         data_store: &S,
         node_ref: &NodeRef<V>,
-        on_modified_leaf: &mut impl FnMut(&NodeHash, &Leaf<V>) -> Result<(), String>,
+        on_modified_leaf: &mut impl FnMut(&NodeHash, &Leaf<V>) -> Result<(), TrieError>,
         on_modified_branch: &mut impl FnMut(
             &NodeHash,
             &Branch<NodeRef<V>>,
             NodeHash,
             NodeHash,
-        ) -> Result<(), String>,
-    ) -> Result<NodeHash, String> {
+        ) -> Result<(), TrieError>,
+    ) -> Result<NodeHash, TrieError> {
         // TODO use a stack instead of recursion
         match node_ref {
             NodeRef::ModBranch(branch) => {
@@ -127,6 +130,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
                     line = line!(),
                     column = column!()
                 )
+                .into()
             }),
         }
     }
@@ -134,7 +138,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
 
 impl<S: Store<V>, V> Transaction<S, V> {
     #[inline]
-    pub fn get(&self, key_hash: &KeyHash) -> Result<Option<&V>, String> {
+    pub fn get(&self, key_hash: &KeyHash) -> Result<Option<&V>, TrieError> {
         match &self.current_root {
             TrieRoot::Empty => Ok(None),
             TrieRoot::Node(node_ref) => Self::get_node(&self.data_store, node_ref, key_hash),
@@ -146,7 +150,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
         data_store: &'s S,
         mut node_ref: &'root NodeRef<V>,
         key_hash: &KeyHash,
-    ) -> Result<Option<&'root V>, String> {
+    ) -> Result<Option<&'root V>, TrieError> {
         loop {
             match node_ref {
                 // TODO check that the KeyPosition is optimized out.
@@ -176,7 +180,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
         data_store: &'s S,
         mut stored_idx: stored::Idx,
         key_hash: &KeyHash,
-    ) -> Result<Option<&'s V>, String> {
+    ) -> Result<Option<&'s V>, TrieError> {
         loop {
             let node = data_store
                 .get_node(stored_idx)
@@ -210,7 +214,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
     }
 
     #[inline]
-    pub fn insert(&mut self, key_hash: &KeyHash, value: V) -> Result<(), String> {
+    pub fn insert(&mut self, key_hash: &KeyHash, value: V) -> Result<(), TrieError> {
         match &mut self.current_root {
             TrieRoot::Empty => {
                 self.current_root = TrieRoot::Node(NodeRef::ModLeaf(Box::new(Leaf {
@@ -231,7 +235,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
         mut node_ref: &'root mut NodeRef<V>,
         key_hash: &KeyHash,
         value: V,
-    ) -> Result<(), String> {
+    ) -> Result<(), TrieError> {
         loop {
             match node_ref {
                 NodeRef::ModBranch(branch) => match branch.descend(key_hash) {
@@ -363,7 +367,7 @@ impl<S: Store<V>, V: AsRef<[u8]> + Clone> Transaction<S, V> {
     /// This will incures allocations, now and unessisary rehashing later when calculating the root hash.
     /// For this reason you should prefer `get` if you have a high probability of not modifying the entry.
     #[inline]
-    pub fn entry<'txn>(&'txn mut self, key_hash: &KeyHash) -> Result<Entry<'txn, V>, String> {
+    pub fn entry<'txn>(&'txn mut self, key_hash: &KeyHash) -> Result<Entry<'txn, V>, TrieError> {
         match self.current_root {
             TrieRoot::Empty => Ok(Entry::VacantEmptyTrie(VacantEntryEmptyTrie {
                 root: &mut self.current_root,
@@ -439,7 +443,7 @@ impl<S: Store<V>, V: AsRef<[u8]> + Clone> Transaction<S, V> {
     }
 }
 
-impl<'a, Db, V: AsRef<[u8]> + Clone> Transaction<SnapshotBuilder<Db, V>, V> {
+impl<Db, V: AsRef<[u8]> + Clone> Transaction<SnapshotBuilder<Db, V>, V> {
     /// An alias for `SnapshotBuilder::new_with_db`.
     ///
     /// Builds a snapshot of the trie before the transaction.
@@ -464,7 +468,7 @@ impl<'a, Db, V: AsRef<[u8]> + Clone> Transaction<SnapshotBuilder<Db, V>, V> {
 
 impl<'s, V: AsRef<[u8]> + Clone> Transaction<&'s Snapshot<V>, V> {
     #[inline]
-    pub fn from_snapshot(snapshot: &'s Snapshot<V>) -> Result<Self, String> {
+    pub fn from_snapshot(snapshot: &'s Snapshot<V>) -> Result<Self, TrieError> {
         Ok(Transaction {
             current_root: snapshot.trie_root()?,
             data_store: snapshot,

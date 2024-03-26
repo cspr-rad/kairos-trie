@@ -6,9 +6,11 @@ extern crate alloc;
 
 use core::fmt::{Debug, Display};
 
+mod errors;
 pub mod stored;
 mod transaction;
 
+pub use errors::TrieError;
 pub use transaction::{
     nodes::{Branch, Leaf, Node, TrieRoot},
     Entry, OccupiedEntry, Transaction, VacantEntry, VacantEntryEmptyTrie,
