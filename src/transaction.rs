@@ -2,6 +2,7 @@ pub(crate) mod nodes;
 
 use alloc::{boxed::Box, format};
 use core::mem;
+use sha2::{Digest, Sha256};
 
 use crate::{stored, KeyHash, NodeHash};
 use crate::{
@@ -67,9 +68,12 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
         ) -> Result<(), TrieError>,
         on_modified_leaf: &mut impl FnMut(&NodeHash, &Leaf<V>) -> Result<(), TrieError>,
     ) -> Result<TrieRoot<NodeHash>, TrieError> {
+        let mut hasher = Sha256::new();
+
         let root_hash = match &self.current_root {
             TrieRoot::Empty => return Ok(TrieRoot::Empty),
             TrieRoot::Node(node_ref) => Self::calc_root_hash_node(
+                &mut hasher,
                 &self.data_store,
                 node_ref,
                 on_modified_leaf,
@@ -87,6 +91,7 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
 
     #[inline]
     fn calc_root_hash_node(
+        hasher: &mut Sha256,
         data_store: &S,
         node_ref: &NodeRef<V>,
         on_modified_leaf: &mut impl FnMut(&NodeHash, &Leaf<V>) -> Result<(), TrieError>,
@@ -101,24 +106,26 @@ impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
         match node_ref {
             NodeRef::ModBranch(branch) => {
                 let left = Self::calc_root_hash_node(
+                    hasher,
                     data_store,
                     &branch.left,
                     on_modified_leaf,
                     on_modified_branch,
                 )?;
                 let right = Self::calc_root_hash_node(
+                    hasher,
                     data_store,
                     &branch.right,
                     on_modified_leaf,
                     on_modified_branch,
                 )?;
 
-                let hash = branch.hash_branch(&left, &right);
+                let hash = branch.hash_branch(hasher, &left, &right);
                 on_modified_branch(&hash, branch, left, right)?;
                 Ok(hash)
             }
             NodeRef::ModLeaf(leaf) => {
-                let hash = leaf.hash_leaf();
+                let hash = leaf.hash_leaf(hasher);
 
                 on_modified_leaf(&hash, leaf)?;
                 Ok(hash)

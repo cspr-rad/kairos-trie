@@ -1,7 +1,7 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::{iter, mem};
 
-use sha2::{Digest, Sha256};
+use sha2::{digest::FixedOutputReset, Digest, Sha256};
 
 use crate::{stored, KeyHash, NodeHash};
 
@@ -282,9 +282,8 @@ impl<NR> Branch<NR> {
     }
 
     #[inline]
-    pub fn hash_branch(&self, left: &NodeHash, right: &NodeHash) -> NodeHash {
-        let mut hasher = Sha256::new();
-
+    pub fn hash_branch(&self, hasher: &mut Sha256, left: &NodeHash, right: &NodeHash) -> NodeHash {
+        hasher.reset();
         hasher.update(left);
         hasher.update(right);
         hasher.update(self.mask.bit_idx.to_le_bytes());
@@ -295,7 +294,7 @@ impl<NR> Branch<NR> {
             .iter()
             .for_each(|word| hasher.update(word.to_le_bytes()));
 
-        NodeHash::new(hasher.finalize().into())
+        NodeHash::new(hasher.finalize_fixed_reset().into())
     }
 }
 
@@ -489,10 +488,10 @@ pub struct Leaf<V> {
 
 impl<V: AsRef<[u8]>> Leaf<V> {
     #[inline]
-    pub fn hash_leaf(&self) -> NodeHash {
-        let mut hasher = Sha256::new();
+    pub fn hash_leaf(&self, hasher: &mut Sha256) -> NodeHash {
+        hasher.reset();
         hasher.update(self.key_hash.to_bytes());
         hasher.update(self.value.as_ref());
-        NodeHash::new(hasher.finalize().into())
+        NodeHash::new(hasher.finalize_fixed_reset().into())
     }
 }

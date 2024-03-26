@@ -3,6 +3,7 @@ use core::{cell::RefCell, ops::Deref};
 use alloc::{boxed::Box, format, vec::Vec};
 use bumpalo::Bump;
 use ouroboros::self_referencing;
+use sha2::{Digest, Sha256};
 
 use crate::{
     transaction::nodes::{NodeRef, TrieRoot},
@@ -85,14 +86,15 @@ impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
         let idx = node as usize;
         let leaf_offset = self.branches.len();
         let unvisited_offset = leaf_offset + self.leaves.len();
+        let mut hasher = Sha256::new();
 
         if let Some(branch) = self.branches.get(idx) {
             let left = self.calc_subtree_hash(branch.left)?;
             let right = self.calc_subtree_hash(branch.right)?;
 
-            Ok(branch.hash_branch(&left, &right))
+            Ok(branch.hash_branch(&mut hasher, &left, &right))
         } else if let Some(leaf) = self.leaves.get(idx - leaf_offset) {
-            Ok(leaf.hash_leaf())
+            Ok(leaf.hash_leaf(&mut hasher))
         } else if let Some(hash) = self.unvisited_nodes.get(idx - unvisited_offset) {
             Ok(*hash)
         } else {
