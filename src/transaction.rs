@@ -1,7 +1,7 @@
 pub(crate) mod nodes;
 
 use alloc::{boxed::Box, format};
-use core::mem;
+use core::{mem, usize};
 
 use crate::{stored, KeyHash, NodeHash, PortableHash, PortableHasher};
 use crate::{
@@ -12,7 +12,9 @@ use crate::{
     TrieError,
 };
 
-use self::nodes::{Branch, KeyPosition, Leaf, Node, NodeRef, StoredLeafRef, TrieRoot};
+use self::nodes::{
+    Branch, KeyPosition, KeyPositionAdjecent, Leaf, Node, NodeRef, StoredLeafRef, TrieRoot,
+};
 
 pub struct Transaction<S, V> {
     data_store: S,
@@ -173,12 +175,10 @@ impl<S: Store<V>, V> Transaction<S, V> {
     ) -> Result<Option<&'root V>, TrieError> {
         loop {
             match node_ref {
-                NodeRef::ModBranch(branch) => match branch.descend(key_hash) {
+                NodeRef::ModBranch(branch) => match branch.key_position(key_hash) {
                     KeyPosition::Left => node_ref = &branch.left,
                     KeyPosition::Right => node_ref = &branch.right,
-                    KeyPosition::PriorWord
-                    | KeyPosition::PrefixWord
-                    | KeyPosition::PrefixVec { .. } => return Ok(None),
+                    KeyPosition::Adjecent(_) => return Ok(None),
                 },
                 NodeRef::ModLeaf(leaf) => {
                     if leaf.key_hash == *key_hash {
@@ -206,12 +206,10 @@ impl<S: Store<V>, V> Transaction<S, V> {
                 .map_err(|e| format!("Error in `get_stored_node`: {e}"))?;
 
             match node {
-                Node::Branch(branch) => match branch.descend(key_hash) {
+                Node::Branch(branch) => match branch.key_position(key_hash) {
                     KeyPosition::Left => stored_idx = branch.left,
                     KeyPosition::Right => stored_idx = branch.right,
-                    KeyPosition::PriorWord
-                    | KeyPosition::PrefixWord
-                    | KeyPosition::PrefixVec { .. } => return Ok(None),
+                    KeyPosition::Adjecent(_) => return Ok(None),
                 },
                 Node::Leaf(leaf) => {
                     if leaf.key_hash == *key_hash {
@@ -257,7 +255,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
     ) -> Result<(), TrieError> {
         loop {
             match node_ref {
-                NodeRef::ModBranch(branch) => match branch.descend(key_hash) {
+                NodeRef::ModBranch(branch) => match branch.key_position(key_hash) {
                     KeyPosition::Left => {
                         node_ref = &mut branch.left;
                         continue;
@@ -266,41 +264,9 @@ impl<S: Store<V>, V> Transaction<S, V> {
                         node_ref = &mut branch.right;
                         continue;
                     }
-                    KeyPosition::PrefixWord => {
-                        Branch::new_at_branch(
-                            branch.mask.word_idx(),
-                            branch.mask.left_prefix,
-                            branch,
-                            Box::new(Leaf {
-                                key_hash: *key_hash,
-                                value,
-                            }),
-                        );
-
-                        return Ok(());
-                    }
-                    KeyPosition::PriorWord => {
-                        Branch::new_at_branch(
-                            branch.mask.word_idx() - 1,
-                            branch.prior_word,
-                            branch,
-                            Box::new(Leaf {
-                                key_hash: *key_hash,
-                                value,
-                            }),
-                        );
-
-                        return Ok(());
-                    }
-                    KeyPosition::PrefixVec {
-                        word_idx,
-                        branch_word,
-                        key_word: _,
-                    } => {
-                        Branch::new_at_branch(
-                            word_idx,
-                            branch_word,
-                            branch,
+                    KeyPosition::Adjecent(pos) => {
+                        branch.new_adjacent_leaf(
+                            pos,
                             Box::new(Leaf {
                                 key_hash: *key_hash,
                                 value,
@@ -387,6 +353,8 @@ impl<S: Store<V>, V: PortableHash + Clone> Transaction<S, V> {
     /// For this reason you should prefer `get` if you have a high probability of not modifying the entry.
     #[inline]
     pub fn entry<'txn>(&'txn mut self, key_hash: &KeyHash) -> Result<Entry<'txn, V>, TrieError> {
+        let mut key_position = KeyPositionAdjecent::PrefixOfWord(usize::MAX);
+
         match self.current_root {
             TrieRoot::Empty => Ok(Entry::VacantEmptyTrie(VacantEntryEmptyTrie {
                 root: &mut self.current_root,
@@ -396,10 +364,13 @@ impl<S: Store<V>, V: PortableHash + Clone> Transaction<S, V> {
                 let mut node_ref = root;
                 loop {
                     let go_right = match &*node_ref {
-                        NodeRef::ModBranch(branch) => match branch.descend(key_hash) {
+                        NodeRef::ModBranch(branch) => match branch.key_position(key_hash) {
                             KeyPosition::Left => false,
                             KeyPosition::Right => true,
-                            _ => break,
+                            KeyPosition::Adjecent(pos) => {
+                                key_position = pos;
+                                break;
+                            }
                         },
                         NodeRef::ModLeaf(_) => break,
                         NodeRef::Stored(idx) => {
@@ -440,9 +411,17 @@ impl<S: Store<V>, V: PortableHash + Clone> Transaction<S, V> {
                 // This convoluted return makes the borrow checker happy.
                 if let NodeRef::ModLeaf(leaf) = &*node_ref {
                     if leaf.key_hash != *key_hash {
+                        // This is bassically a logical null
+                        // TODO we should break VacantEntry into two types VacantEntryBranch and VacantEntryLeaf
+                        debug_assert_eq!(
+                            key_position,
+                            KeyPositionAdjecent::PrefixOfWord(usize::MAX)
+                        );
+
                         return Ok(Entry::Vacant(VacantEntry {
                             parent: node_ref,
                             key_hash: *key_hash,
+                            key_position,
                         }));
                     }
                 };
@@ -451,6 +430,7 @@ impl<S: Store<V>, V: PortableHash + Clone> Transaction<S, V> {
                     Ok(Entry::Vacant(VacantEntry {
                         parent: node_ref,
                         key_hash: *key_hash,
+                        key_position,
                     }))
                 } else if let NodeRef::ModLeaf(leaf) = &mut *node_ref {
                     Ok(Entry::Occupied(OccupiedEntry { leaf }))
@@ -611,6 +591,7 @@ impl<'a, V> OccupiedEntry<'a, V> {
 pub struct VacantEntry<'a, V> {
     parent: &'a mut NodeRef<V>,
     key_hash: KeyHash,
+    key_position: KeyPositionAdjecent,
 }
 
 impl<'a, V> VacantEntry<'a, V> {
@@ -626,19 +607,14 @@ impl<'a, V> VacantEntry<'a, V> {
 
     #[inline]
     pub fn insert(self, value: V) -> &'a mut V {
-        let VacantEntry { parent, key_hash } = self;
+        let VacantEntry {
+            parent,
+            key_hash,
+            key_position,
+        } = self;
         if let NodeRef::ModBranch(branch) = parent {
-            debug_assert!(matches!(
-                branch.descend(&key_hash),
-                KeyPosition::PrefixWord | KeyPosition::PriorWord | KeyPosition::PrefixVec { .. }
-            ));
-
-            let leaf = Branch::new_at_branch_ret(
-                branch.mask.word_idx(),
-                branch.mask.left_prefix,
-                branch,
-                Box::new(Leaf { key_hash, value }),
-            );
+            let leaf =
+                branch.new_adjacent_leaf_ret(key_position, Box::new(Leaf { key_hash, value }));
             return &mut leaf.value;
         };
 

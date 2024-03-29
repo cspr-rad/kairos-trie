@@ -118,16 +118,24 @@ impl<'s, V> StoredLeafRef<'s, V> {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct BranchMask {
     /// The index of the discriminant bit in the 256 bit hash key.
-    pub bit_idx: u32,
+    bit_idx: u32,
 
     /// Common prefix of word at `bit_idx / 32`, a 0 discriminant bit, and trailing 0s
-    pub left_prefix: u32,
+    left_prefix: u32,
 }
 
 impl BranchMask {
-    #[inline]
-    const fn new(word_idx: u32, a: u32, b: u32) -> Self {
-        let diff = a ^ b;
+    pub const fn new(word_idx: u32, a: u32, b: u32) -> Self {
+        Self::new_inner(word_idx, a, a ^ b)
+    }
+
+    #[inline(always)]
+    pub const fn new_with_mask(word_idx: u32, a: u32, b: u32, prefix_mask: u32) -> Self {
+        Self::new_inner(word_idx, a, (a ^ b) & prefix_mask)
+    }
+
+    #[inline(always)]
+    const fn new_inner(word_idx: u32, a: u32, diff: u32) -> Self {
         let relative_bit_idx = diff.trailing_zeros();
 
         let bit_idx = word_idx * 32 + relative_bit_idx;
@@ -144,7 +152,7 @@ impl BranchMask {
     }
 
     #[inline(always)]
-    pub fn right_prefix(&self) -> u32 {
+    pub const fn right_prefix(&self) -> u32 {
         self.left_prefix | self.discriminant_bit_mask()
     }
 
@@ -159,20 +167,20 @@ impl BranchMask {
     }
 
     #[inline(always)]
-    pub fn word_idx(&self) -> usize {
+    pub const fn word_idx(&self) -> usize {
         (self.bit_idx / 32) as usize
     }
 
     /// The index of the discriminant bit in the `left_prefix`.
     #[inline(always)]
-    pub fn relative_bit_idx(&self) -> u32 {
+    pub const fn relative_bit_idx(&self) -> u32 {
         let r = self.bit_idx % 32;
         debug_assert!(r < 32);
         r
     }
 
     #[inline(always)]
-    pub fn discriminant_bit_mask(&self) -> u32 {
+    pub const fn discriminant_bit_mask(&self) -> u32 {
         1 << self.relative_bit_idx()
     }
 
@@ -189,9 +197,13 @@ impl BranchMask {
         }
     }
 
-    #[allow(dead_code)]
     #[inline(always)]
-    pub fn trailing_bits_mask(&self) -> u32 {
+    pub fn prefix_mask(&self) -> u32 {
+        self.prefix_discriminant_mask() ^ self.discriminant_bit_mask()
+    }
+
+    #[inline(always)]
+    pub const fn trailing_bits_mask(&self) -> u32 {
         u32::MAX << (self.relative_bit_idx() + 1)
     }
 }
@@ -253,39 +265,45 @@ impl<NR> fmt::Debug for Branch<NR> {
     }
 }
 
-/// I'm counting on the compiler to optimize this out when matched immediately.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum KeyPosition {
+    Adjecent(KeyPositionAdjecent),
     Right,
     Left,
-    PriorWord,
-    PrefixWord,
-    PrefixVec {
-        word_idx: usize,
-        branch_word: u32,
-        key_word: u32,
-    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum KeyPositionAdjecent {
+    /// The delta bit occurs before the existing branch's discriminant bit in the same word.
+    /// `branch.mask.word_idx() == PrefixOfWord(word_idx)`.
+    PrefixOfWord(usize),
+    /// The delta bit occurs in the word prior to the existing branch's discriminant bit.
+    /// `PrefixOfWord(word_idx) == branch.mask.word_idx() - 1`
+    /// `PrefixOfWord(word_idx) != 0`.
+    PriorWord(usize),
+    /// The delta bit occurs in the prefix vector.
+    /// `branch.mask.word_idx() - PrefixVec(word_idx) >= 2`.
+    PrefixVec(usize),
 }
 
 impl<NR> Branch<NR> {
+    /// Returns the position of the key relative to the branch.
     #[inline(always)]
-    pub fn descend(&self, key_hash: &KeyHash) -> KeyPosition {
+    pub fn key_position(&self, key_hash: &KeyHash) -> KeyPosition {
         let word_idx = self.mask.bit_idx as usize / 32;
         debug_assert!(word_idx < 8);
 
         debug_assert!(self.prefix.len() <= word_idx);
         let prefix_offset = word_idx.saturating_sub(self.prefix.len() + 1);
 
-        let prefix_diff = iter::zip(self.prefix.iter(), key_hash.0.iter().skip(prefix_offset))
-            .enumerate()
-            .find(|(_, (branch_word, key_word))| branch_word != key_word);
+        let prefix_diff = iter::zip(
+            self.prefix.iter(),
+            key_hash.0.iter().enumerate().skip(prefix_offset),
+        )
+        .find(|(branch_word, (_, key_word))| branch_word != key_word);
 
-        if let Some((idx, (branch_word, key_word))) = prefix_diff {
-            return KeyPosition::PrefixVec {
-                word_idx: idx + prefix_offset,
-                branch_word: *branch_word,
-                key_word: *key_word,
-            };
+        if let Some((_, (idx, _))) = prefix_diff {
+            return KeyPosition::Adjecent(KeyPositionAdjecent::PrefixVec(idx));
         }
 
         // If sub wraps around to the last word, the prior word is 0.
@@ -293,7 +311,7 @@ impl<NR> Branch<NR> {
         let prior_word = key_hash.0.get(prior_word_idx).unwrap_or(&0);
 
         if self.prior_word != *prior_word {
-            return KeyPosition::PriorWord;
+            return KeyPosition::Adjecent(KeyPositionAdjecent::PriorWord(prior_word_idx));
         }
 
         let hash_segment = key_hash.0[word_idx];
@@ -303,7 +321,7 @@ impl<NR> Branch<NR> {
         } else if self.mask.is_right_descendant(hash_segment) {
             KeyPosition::Right
         } else {
-            KeyPosition::PrefixWord
+            KeyPosition::Adjecent(KeyPositionAdjecent::PrefixOfWord(word_idx))
         }
     }
 
@@ -346,14 +364,15 @@ impl<V> Branch<NodeRef<V>> {
 
     /// A wrapper around `new_at_branch_ret` which returns nothing.
     /// This exists to aid compiler inlining.
+    ///
+    /// `key_position` must come from `branch.key_position(leaf.key_hash)`.
     #[inline]
-    pub(crate) fn new_at_branch(
-        word_idx: usize,
-        branch_word_or_prefix: u32,
-        branch: &mut Box<Self>,
+    pub(crate) fn new_adjacent_leaf(
+        self: &mut Box<Self>,
+        key_position: KeyPositionAdjecent,
         leaf: Box<Leaf<V>>,
     ) {
-        Self::new_at_branch_ret(word_idx, branch_word_or_prefix, branch, leaf);
+        self.new_adjacent_leaf_ret(key_position, leaf);
     }
 
     /// Store a new leaf adjacent to an existing branch.
@@ -361,60 +380,87 @@ impl<V> Branch<NodeRef<V>> {
     /// The old branch will be moved to a new Box, under the new branch.
     // inline(always) is used to increace the odds of the compiler removing the return when unused.
     #[inline(always)]
-    pub(crate) fn new_at_branch_ret(
-        word_idx: usize,
-        branch_word_or_prefix: u32,
-        branch: &mut Box<Self>,
+    pub(crate) fn new_adjacent_leaf_ret<'a>(
+        self: &'a mut Box<Self>,
+        key_position: KeyPositionAdjecent,
         leaf: Box<Leaf<V>>,
-    ) -> &mut Leaf<V> {
-        debug_assert!(word_idx < 8);
+    ) -> &'a mut Leaf<V> {
+        let (mask, prior_word, prefix, leaf_word) = match key_position {
+            KeyPositionAdjecent::PrefixOfWord(word_idx) => {
+                debug_assert_eq!(self.mask.word_idx(), word_idx);
 
-        let leaf_word = leaf.key_hash.0[word_idx];
+                let branch_word = self.mask.left_prefix;
+                let leaf_word = leaf.key_hash.0[word_idx];
 
-        let prior_word = if word_idx == 0 {
-            0
-        } else {
-            leaf.key_hash.0[word_idx - 1]
-        };
+                let mask = BranchMask::new_with_mask(
+                    word_idx as u32,
+                    branch_word,
+                    leaf_word,
+                    self.mask.prefix_mask(),
+                );
 
-        let diff = branch_word_or_prefix ^ leaf_word;
-        let discriminant_bit_idx = diff.trailing_zeros();
+                debug_assert_eq!(
+                    self.prior_word,
+                    word_idx
+                        .checked_sub(1)
+                        .map(|i| leaf.key_hash.0[i])
+                        .unwrap_or(0)
+                );
 
-        let mask = BranchMask {
-            bit_idx: word_idx as u32 * 32 + discriminant_bit_idx,
-            left_prefix: leaf_word & ((1 << discriminant_bit_idx) - 1),
-        };
+                (
+                    mask,
+                    self.prior_word,
+                    mem::take(&mut self.prefix),
+                    leaf_word,
+                )
+            }
+            KeyPositionAdjecent::PriorWord(word_idx) => {
+                debug_assert_eq!(word_idx, self.mask.word_idx() - 1);
 
-        debug_assert!(branch.mask.word_idx() >= word_idx);
+                let branch_word = self.prior_word;
+                let leaf_word = leaf.key_hash.0[word_idx];
 
-        let prefix = if word_idx == branch.mask.word_idx() {
-            debug_assert_eq!(prior_word, branch.prior_word);
-            mem::take(&mut branch.prefix)
-        } else if word_idx == branch.mask.word_idx() - 1 {
-            mem::take(&mut branch.prefix)
-        } else {
-            // prefix:      [(1, _), (2, 0xF), (3, _), (4, _)] prior_word: (5, _) left_prefix: (6, _)
-            // key: [(0, _), (1, _), (2, 0xA), (3, _), (4, _), (5, _), (6, _), (7, _)]
-            // word_idx: 2
-            // branch.word_idx: 6
+                let mask = BranchMask::new(word_idx as u32, branch_word, leaf_word);
 
-            debug_assert!(branch.prefix.len() <= word_idx);
-            let prefix_start_idx = branch
-                .mask
-                .word_idx()
-                .saturating_sub(branch.prefix.len() + 1);
-            let check_prefix = iter::zip(
-                branch.prefix.iter(),
-                leaf.key_hash.0.iter().skip(prefix_start_idx),
-            )
-            .enumerate()
-            .find(|(_, (branch_word, key_word))| branch_word != key_word)
-            .map(|(idx, _)| idx + prefix_start_idx);
-            debug_assert!(check_prefix.is_none());
+                // If sub wraps around to the last word, the prior word is 0.
+                // This is a little optimization since we are already paying for a bounds check.
+                let prior_word_idx = word_idx.wrapping_sub(1);
+                let prior_word = leaf.key_hash.0.get(prior_word_idx).unwrap_or(&0);
 
-            let mut prefix = mem::take(&mut branch.prefix);
-            branch.prefix = prefix.split_off(word_idx - prefix_start_idx);
-            prefix
+                (mask, *prior_word, mem::take(&mut self.prefix), leaf_word)
+            }
+            KeyPositionAdjecent::PrefixVec(word_idx) => {
+                debug_assert!(self.mask.word_idx() - word_idx >= 2);
+                debug_assert!(!self.prefix.is_empty());
+
+                // we don't include word or prior_word in the prefix
+                let key_prefix = &leaf.key_hash.0[..word_idx.saturating_sub(1)];
+                let delta_in_prefix = key_prefix
+                    .iter()
+                    .rev()
+                    .zip(self.prefix.iter().rev())
+                    .enumerate()
+                    .find(|(_, (key_word, branch_word))| key_word != branch_word);
+
+                debug_assert_eq!(delta_in_prefix, None);
+
+                let prefix_offset = word_idx.saturating_sub(self.prefix.len() + 1);
+
+                let new_prefix =
+                    leaf.key_hash.0[prefix_offset..word_idx.saturating_sub(1)].to_vec();
+                let old_prefix = self.prefix[word_idx + 1 - prefix_offset..].to_vec();
+
+                let branch_word = self.prefix[word_idx - prefix_offset];
+                let leaf_word = leaf.key_hash.0[word_idx];
+                let mask = BranchMask::new(word_idx as u32, branch_word, leaf_word);
+
+                let prior_word_idx = word_idx.wrapping_sub(1);
+                let prior_word = leaf.key_hash.0.get(prior_word_idx).unwrap_or(&0);
+
+                self.prefix = old_prefix;
+
+                (mask, *prior_word, new_prefix, leaf_word)
+            }
         };
 
         let new_parent = Box::new(Branch {
@@ -425,23 +471,23 @@ impl<V> Branch<NodeRef<V>> {
             prefix,
         });
 
-        let old_branch = mem::replace(branch, new_parent);
+        let old_branch = mem::replace(self, new_parent);
 
         let r = if mask.is_left_descendant(leaf_word) {
             debug_assert!(!mask.is_right_descendant(leaf_word));
 
-            branch.left = NodeRef::ModLeaf(leaf);
-            branch.right = NodeRef::ModBranch(old_branch);
+            self.left = NodeRef::ModLeaf(leaf);
+            self.right = NodeRef::ModBranch(old_branch);
 
-            &mut branch.left
+            &mut self.left
         } else {
             debug_assert!(mask.is_right_descendant(leaf_word));
             debug_assert!(!mask.is_left_descendant(leaf_word));
 
-            branch.left = NodeRef::ModBranch(old_branch);
-            branch.right = NodeRef::ModLeaf(leaf);
+            self.left = NodeRef::ModBranch(old_branch);
+            self.right = NodeRef::ModLeaf(leaf);
 
-            &mut branch.right
+            &mut self.right
         };
 
         match r {

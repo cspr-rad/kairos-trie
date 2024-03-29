@@ -5,7 +5,7 @@ use proptest::prelude::*;
 
 use kairos_trie::{
     stored::{memory_db::MemoryDb, merkle::SnapshotBuilder},
-    Transaction, TrieRoot,
+    KeyHash, Transaction, TrieRoot,
 };
 use utils::operations::*;
 
@@ -50,4 +50,56 @@ proptest! {
         batches in arb_batches(1..5000usize, 1..100_000usize, 1000, 10_000)) {
         end_to_end_entry_ops(batches);
     }
+}
+
+#[test]
+fn leaf_prefix_insert() {
+    let failed = vec![vec![
+        Operation::Insert(KeyHash([1, 0, 0, 0, 0, 0, 0, 0]), 0u64.to_le_bytes()),
+        Operation::Insert(KeyHash([1, 0, 0, 0, 0, 0, 0, 1]), 0u64.to_le_bytes()),
+    ]];
+
+    end_to_end_entry_ops(failed);
+}
+
+#[test]
+fn leaf_prefix_insert_at_root() {
+    let failed = vec![vec![
+        Operation::Insert(KeyHash([1, 0, 0, 0, 0, 0, 0, 0]), 0u64.to_le_bytes()),
+        Operation::Insert(KeyHash([1, 0, 0, 0, 0, 0, 0, 1]), 0u64.to_le_bytes()),
+        Operation::Insert(KeyHash([0, 0, 0, 0, 0, 0, 0, 0]), 0u64.to_le_bytes()),
+    ]];
+
+    end_to_end_entry_ops(failed);
+}
+
+#[test]
+fn leaf_prefix_insert_entry_insert_at_root() {
+    let failed = vec![vec![
+        Operation::Insert(KeyHash([1, 0, 0, 0, 0, 0, 0, 0]), 0u64.to_le_bytes()),
+        Operation::Insert(KeyHash([1, 0, 0, 0, 0, 0, 0, 1]), 0u64.to_le_bytes()),
+        Operation::EntryInsert(KeyHash([0, 0, 0, 0, 0, 0, 0, 0]), 0u64.to_le_bytes()),
+    ]];
+
+    end_to_end_entry_ops(failed);
+}
+
+#[test]
+fn leaf_prefix_entry_insert() {
+    let failed = vec![vec![
+        Operation::EntryInsert(KeyHash([1, 0, 0, 0, 0, 0, 0, 0]), 0u64.to_le_bytes()),
+        Operation::EntryInsert(KeyHash([1, 0, 0, 0, 0, 0, 0, 1]), 0u64.to_le_bytes()),
+    ]];
+
+    end_to_end_entry_ops(failed);
+}
+
+#[test]
+fn leaf_prefix_entry_or_insert() {
+    let failed = vec![vec![
+        Operation::EntryOrInsert(KeyHash([1, 0, 0, 0, 0, 0, 0, 0]), 0u64.to_le_bytes()),
+        Operation::EntryOrInsert(KeyHash([1, 0, 0, 0, 0, 0, 0, 1]), 0u64.to_le_bytes()),
+    ]];
+
+    end_to_end_entry_ops(failed);
 }
