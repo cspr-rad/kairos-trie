@@ -1,9 +1,7 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::{iter, mem};
 
-use sha2::{digest::FixedOutputReset, Digest, Sha256};
-
-use crate::{stored, KeyHash, NodeHash};
+use crate::{hash::PortableHasher, stored, KeyHash, NodeHash, PortableHash, PortableUpdate};
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub enum TrieRoot<T> {
@@ -282,19 +280,23 @@ impl<NR> Branch<NR> {
     }
 
     #[inline]
-    pub fn hash_branch(&self, hasher: &mut Sha256, left: &NodeHash, right: &NodeHash) -> NodeHash {
-        hasher.reset();
-        hasher.update(left);
-        hasher.update(right);
-        hasher.update(self.mask.bit_idx.to_le_bytes());
-        hasher.update(self.mask.left_prefix.to_le_bytes());
-        hasher.update(self.prior_word.to_le_bytes());
+    pub fn hash_branch<H: PortableHasher<32>>(
+        &self,
+        hasher: &mut H,
+        left: &NodeHash,
+        right: &NodeHash,
+    ) -> NodeHash {
+        hasher.portable_update(left);
+        hasher.portable_update(right);
+        hasher.portable_update(self.mask.bit_idx.to_le_bytes());
+        hasher.portable_update(self.mask.left_prefix.to_le_bytes());
+        hasher.portable_update(self.prior_word.to_le_bytes());
 
         self.prefix
             .iter()
-            .for_each(|word| hasher.update(word.to_le_bytes()));
+            .for_each(|word| hasher.portable_update(word.to_le_bytes()));
 
-        NodeHash::new(hasher.finalize_fixed_reset().into())
+        NodeHash::new(hasher.finalize_reset())
     }
 }
 
@@ -486,12 +488,19 @@ pub struct Leaf<V> {
     pub value: V,
 }
 
-impl<V: AsRef<[u8]>> Leaf<V> {
+impl<V: PortableHash> PortableHash for Leaf<V> {
     #[inline]
-    pub fn hash_leaf(&self, hasher: &mut Sha256) -> NodeHash {
-        hasher.reset();
-        hasher.update(self.key_hash.to_bytes());
-        hasher.update(self.value.as_ref());
-        NodeHash::new(hasher.finalize_fixed_reset().into())
+    fn portable_hash<H: PortableUpdate>(&self, hasher: &mut H) {
+        hasher.portable_update(self.key_hash.to_bytes());
+        self.value.portable_hash(hasher);
+    }
+}
+
+impl<V: PortableHash> Leaf<V> {
+    #[inline]
+    pub fn hash_leaf<H: PortableHasher<32>>(&self, hasher: &mut H) -> NodeHash {
+        hasher.portable_update(self.key_hash.to_bytes());
+        self.value.portable_hash(hasher);
+        NodeHash::new(hasher.finalize_reset())
     }
 }

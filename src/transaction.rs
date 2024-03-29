@@ -4,7 +4,7 @@ use alloc::{boxed::Box, format};
 use core::mem;
 use sha2::{Digest, Sha256};
 
-use crate::{stored, KeyHash, NodeHash};
+use crate::{stored, KeyHash, NodeHash, PortableHash};
 use crate::{
     stored::{
         merkle::{Snapshot, SnapshotBuilder},
@@ -20,7 +20,7 @@ pub struct Transaction<S, V> {
     current_root: TrieRoot<NodeRef<V>>,
 }
 
-impl<Db: DatabaseSet<V>, V: Clone + AsRef<[u8]>> Transaction<SnapshotBuilder<Db, V>, V> {
+impl<Db: DatabaseSet<V>, V: Clone + PortableHash> Transaction<SnapshotBuilder<Db, V>, V> {
     /// Write modified nodes to the database and return the root hash.
     /// Calling this method will write all modified nodes to the database.
     /// Calling this method again will rewrite the nodes to the database.
@@ -56,7 +56,7 @@ impl<Db: DatabaseSet<V>, V: Clone + AsRef<[u8]>> Transaction<SnapshotBuilder<Db,
     }
 }
 
-impl<S: Store<V>, V: AsRef<[u8]>> Transaction<S, V> {
+impl<S: Store<V>, V: PortableHash> Transaction<S, V> {
     #[inline]
     pub fn calc_root_hash_inner(
         &self,
@@ -366,7 +366,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
     }
 }
 
-impl<S: Store<V>, V: AsRef<[u8]> + Clone> Transaction<S, V> {
+impl<S: Store<V>, V: PortableHash + Clone> Transaction<S, V> {
     /// This method allows for getting, inserting, and updating a entry in the trie with a single lookup.
     /// We match the standard library's `Entry` API for the most part.
     ///
@@ -450,7 +450,7 @@ impl<S: Store<V>, V: AsRef<[u8]> + Clone> Transaction<S, V> {
     }
 }
 
-impl<Db, V: AsRef<[u8]> + Clone> Transaction<SnapshotBuilder<Db, V>, V> {
+impl<Db, V: PortableHash + Clone> Transaction<SnapshotBuilder<Db, V>, V> {
     /// An alias for `SnapshotBuilder::new_with_db`.
     ///
     /// Builds a snapshot of the trie before the transaction.
@@ -473,7 +473,7 @@ impl<Db, V: AsRef<[u8]> + Clone> Transaction<SnapshotBuilder<Db, V>, V> {
     }
 }
 
-impl<'s, V: AsRef<[u8]> + Clone> Transaction<&'s Snapshot<V>, V> {
+impl<'s, V: PortableHash + Clone> Transaction<&'s Snapshot<V>, V> {
     #[inline]
     pub fn from_snapshot(snapshot: &'s Snapshot<V>) -> Result<Self, TrieError> {
         Ok(Transaction {

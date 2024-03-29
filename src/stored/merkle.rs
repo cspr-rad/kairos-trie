@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     transaction::nodes::{NodeRef, TrieRoot},
-    Branch, Leaf, TrieError,
+    Branch, Leaf, PortableHash, TrieError,
 };
 
 use super::{DatabaseGet, Idx, Node, NodeHash, Store};
@@ -28,7 +28,7 @@ pub struct Snapshot<V> {
     unvisited_nodes: Box<[NodeHash]>,
 }
 
-impl<V: AsRef<[u8]>> Snapshot<V> {
+impl<V: PortableHash> Snapshot<V> {
     #[inline]
     pub fn root_node_idx(&self) -> Result<TrieRoot<Idx>> {
         // Revist this once https://github.com/rust-lang/rust/issues/37854 is stable
@@ -75,7 +75,7 @@ impl<V: AsRef<[u8]>> Snapshot<V> {
     }
 }
 
-impl<V: AsRef<[u8]>> Store<V> for Snapshot<V> {
+impl<V: PortableHash> Store<V> for Snapshot<V> {
     type Error = TrieError;
 
     // TODO fix possible stack overflow

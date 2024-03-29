@@ -7,10 +7,12 @@ extern crate alloc;
 use core::fmt::{Debug, Display};
 
 mod errors;
+mod hash;
 pub mod stored;
 mod transaction;
 
 pub use errors::TrieError;
+pub use hash::{PortableHash, PortableHasher, PortableUpdate};
 pub use transaction::{
     nodes::{Branch, Leaf, Node, TrieRoot},
     Entry, OccupiedEntry, Transaction, VacantEntry, VacantEntryEmptyTrie,
@@ -60,6 +62,13 @@ impl From<&KeyHash> for [u8; 32] {
     #[inline]
     fn from(hash: &KeyHash) -> [u8; 32] {
         hash.to_bytes()
+    }
+}
+
+impl PortableHash for KeyHash {
+    #[inline]
+    fn portable_hash<H: PortableUpdate>(&self, hasher: &mut H) {
+        self.0.portable_hash(hasher);
     }
 }
 
