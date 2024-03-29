@@ -1,28 +1,38 @@
 use alloc::{rc::Rc, sync::Arc};
-use digest::{Digest, FixedOutputReset};
 
-pub trait PortableHasher<const LEN: usize>: PortableUpdate {
+pub trait PortableHasher<const LEN: usize>: PortableUpdate + Default {
     fn finalize_reset(&mut self) -> [u8; LEN];
-}
-
-impl<const LEN: usize, H: Digest + FixedOutputReset> PortableHasher<LEN> for H
-where
-    digest::Output<Self>: Into<[u8; LEN]>,
-{
-    #[inline(always)]
-    fn finalize_reset(&mut self) -> [u8; LEN] {
-        Digest::finalize_reset(self).into()
-    }
 }
 
 pub trait PortableUpdate {
     fn portable_update(&mut self, data: impl AsRef<[u8]>);
 }
 
-impl<H: digest::Update> PortableUpdate for H {
+/// A wrapper around a `digest::Digest` that implements `PortableHasher`.
+#[derive(Debug, Clone)]
+pub struct DigestHasher<H: digest::Digest>(pub H);
+
+impl<H: digest::Digest> Default for DigestHasher<H> {
+    #[inline(always)]
+    fn default() -> Self {
+        Self(H::new())
+    }
+}
+
+impl<const LEN: usize, H: digest::Digest + digest::FixedOutputReset> PortableHasher<LEN>
+    for DigestHasher<H>
+where
+    digest::Output<H>: Into<[u8; LEN]>,
+{
+    #[inline(always)]
+    fn finalize_reset(&mut self) -> [u8; LEN] {
+        self.0.finalize_reset().into()
+    }
+}
+impl<H: digest::Digest> PortableUpdate for DigestHasher<H> {
     #[inline(always)]
     fn portable_update(&mut self, data: impl AsRef<[u8]>) {
-        digest::Update::update(self, data.as_ref())
+        self.0.update(data.as_ref());
     }
 }
 

@@ -7,7 +7,7 @@ use alloc::{rc::Rc, sync::Arc};
 
 use crate::{
     transaction::nodes::{Branch, Leaf, Node},
-    NodeHash,
+    NodeHash, PortableHasher,
 };
 
 pub type Idx = u32;
@@ -15,7 +15,11 @@ pub type Idx = u32;
 pub trait Store<V> {
     type Error: Display;
 
-    fn calc_subtree_hash(&self, hash_idx: Idx) -> Result<NodeHash, Self::Error>;
+    fn calc_subtree_hash(
+        &self,
+        hasher: &mut impl PortableHasher<32>,
+        hash_idx: Idx,
+    ) -> Result<NodeHash, Self::Error>;
 
     fn get_node(&self, hash_idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>, Self::Error>;
 }
@@ -24,8 +28,13 @@ impl<V, S: Store<V>> Store<V> for &S {
     type Error = S::Error;
 
     #[inline(always)]
-    fn calc_subtree_hash(&self, hash_idx: Idx) -> Result<NodeHash, Self::Error> {
-        (**self).calc_subtree_hash(hash_idx)
+    fn calc_subtree_hash(
+        &self,
+
+        hasher: &mut impl PortableHasher<32>,
+        hash_idx: Idx,
+    ) -> Result<NodeHash, Self::Error> {
+        (**self).calc_subtree_hash(hasher, hash_idx)
     }
 
     #[inline(always)]
@@ -38,8 +47,12 @@ impl<V, S: Store<V>> Store<V> for Rc<S> {
     type Error = S::Error;
 
     #[inline(always)]
-    fn calc_subtree_hash(&self, hash_idx: Idx) -> Result<NodeHash, Self::Error> {
-        (**self).calc_subtree_hash(hash_idx)
+    fn calc_subtree_hash(
+        &self,
+        hasher: &mut impl PortableHasher<32>,
+        hash_idx: Idx,
+    ) -> Result<NodeHash, Self::Error> {
+        (**self).calc_subtree_hash(hasher, hash_idx)
     }
 
     #[inline(always)]
@@ -52,8 +65,12 @@ impl<V, S: Store<V>> Store<V> for Arc<S> {
     type Error = S::Error;
 
     #[inline(always)]
-    fn calc_subtree_hash(&self, hash_idx: Idx) -> Result<NodeHash, Self::Error> {
-        (**self).calc_subtree_hash(hash_idx)
+    fn calc_subtree_hash(
+        &self,
+        hasher: &mut impl PortableHasher<32>,
+        hash_idx: Idx,
+    ) -> Result<NodeHash, Self::Error> {
+        (**self).calc_subtree_hash(hasher, hash_idx)
     }
 
     #[inline(always)]

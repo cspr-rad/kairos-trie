@@ -3,11 +3,10 @@ use core::{cell::RefCell, ops::Deref};
 use alloc::{boxed::Box, format, vec::Vec};
 use bumpalo::Bump;
 use ouroboros::self_referencing;
-use sha2::{Digest, Sha256};
 
 use crate::{
     transaction::nodes::{NodeRef, TrieRoot},
-    Branch, Leaf, PortableHash, TrieError,
+    Branch, Leaf, PortableHash, PortableHasher, TrieError,
 };
 
 use super::{DatabaseGet, Idx, Node, NodeHash, Store};
@@ -67,9 +66,12 @@ impl<V: PortableHash> Snapshot<V> {
 
     /// Always check that the snapshot is of the merkle tree you expect.
     #[inline]
-    pub fn calc_root_hash(&self) -> Result<TrieRoot<NodeHash>> {
+    pub fn calc_root_hash(
+        &self,
+        hasher: &mut impl PortableHasher<32>,
+    ) -> Result<TrieRoot<NodeHash>> {
         match self.root_node_idx()? {
-            TrieRoot::Node(idx) => Ok(TrieRoot::Node(self.calc_subtree_hash(idx)?)),
+            TrieRoot::Node(idx) => Ok(TrieRoot::Node(self.calc_subtree_hash(hasher, idx)?)),
             TrieRoot::Empty => Ok(TrieRoot::Empty),
         }
     }
@@ -81,20 +83,27 @@ impl<V: PortableHash> Store<V> for Snapshot<V> {
     // TODO fix possible stack overflow
     // I dislike using an explicit mutable stack.
     // I have an idea for abusing async for high performance segmented stacks
+    /// Calculate the hash of the subtree.
+    /// If you know the hashes of both children, you should use `Branch::hash_branch` instead.
+    ///
+    /// Caller must ensure that the hasher is reset before calling this function.
     #[inline]
-    fn calc_subtree_hash(&self, node: Idx) -> Result<NodeHash> {
+    fn calc_subtree_hash(
+        &self,
+        hasher: &mut impl PortableHasher<32>,
+        node: Idx,
+    ) -> Result<NodeHash> {
         let idx = node as usize;
         let leaf_offset = self.branches.len();
         let unvisited_offset = leaf_offset + self.leaves.len();
-        let mut hasher = Sha256::new();
 
         if let Some(branch) = self.branches.get(idx) {
-            let left = self.calc_subtree_hash(branch.left)?;
-            let right = self.calc_subtree_hash(branch.right)?;
+            let left = self.calc_subtree_hash(hasher, branch.left)?;
+            let right = self.calc_subtree_hash(hasher, branch.right)?;
 
-            Ok(branch.hash_branch(&mut hasher, &left, &right))
+            Ok(branch.hash_branch(hasher, &left, &right))
         } else if let Some(leaf) = self.leaves.get(idx - leaf_offset) {
-            Ok(leaf.hash_leaf(&mut hasher))
+            Ok(leaf.hash_leaf(hasher))
         } else if let Some(hash) = self.unvisited_nodes.get(idx - unvisited_offset) {
             Ok(*hash)
         } else {
@@ -151,7 +160,11 @@ impl<Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<Db, V> {
     type Error = TrieError;
 
     #[inline]
-    fn calc_subtree_hash(&self, hash_idx: Idx) -> Result<NodeHash, Self::Error> {
+    fn calc_subtree_hash(
+        &self,
+        _: &mut impl PortableHasher<32>,
+        hash_idx: Idx,
+    ) -> Result<NodeHash, Self::Error> {
         let hash_idx = hash_idx as usize;
 
         self.with_nodes(|nodes| {

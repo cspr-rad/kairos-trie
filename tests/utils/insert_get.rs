@@ -7,8 +7,9 @@ use kairos_trie::{
         merkle::{Snapshot, SnapshotBuilder},
         DatabaseSet,
     },
-    KeyHash, NodeHash, Transaction, TrieRoot,
+    DigestHasher, KeyHash, NodeHash, Transaction, TrieRoot,
 };
+use sha2::Sha256;
 
 pub fn run_against_snapshot_builder<Db: 'static + DatabaseSet<[u8; 8]>>(
     new: &HashMap<KeyHash, u64>,
@@ -23,7 +24,7 @@ pub fn run_against_snapshot_builder<Db: 'static + DatabaseSet<[u8; 8]>>(
         txn.insert(key, value.to_le_bytes()).unwrap();
     }
 
-    let new_root_hash = txn.commit().unwrap();
+    let new_root_hash = txn.commit(&mut DigestHasher::<Sha256>::default()).unwrap();
     let snapshot = txn.build_initial_snapshot();
 
     (new_root_hash, snapshot)
@@ -36,7 +37,12 @@ pub fn run_against_snapshot(
     new_root_hash: TrieRoot<NodeHash>,
     old_root_hash: TrieRoot<NodeHash>,
 ) {
-    assert_eq!(old_root_hash, snapshot.calc_root_hash().unwrap());
+    assert_eq!(
+        old_root_hash,
+        snapshot
+            .calc_root_hash(&mut DigestHasher::<Sha256>::default())
+            .unwrap()
+    );
 
     let mut txn = Transaction::from_snapshot(&snapshot).unwrap();
 
@@ -49,6 +55,8 @@ pub fn run_against_snapshot(
         assert_eq!(ret_val, &value.to_le_bytes());
     }
 
-    let root_hash = txn.calc_root_hash().unwrap();
+    let root_hash = txn
+        .calc_root_hash(&mut DigestHasher::<Sha256>::default())
+        .unwrap();
     assert_eq!(root_hash, new_root_hash);
 }

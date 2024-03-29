@@ -279,6 +279,9 @@ impl<NR> Branch<NR> {
         }
     }
 
+    /// Hash a branch node with known child hashes.
+    ///
+    /// Caller must ensure that the hasher is reset before calling this function.
     #[inline]
     pub fn hash_branch<H: PortableHasher<32>>(
         &self,
@@ -497,6 +500,9 @@ impl<V: PortableHash> PortableHash for Leaf<V> {
 }
 
 impl<V: PortableHash> Leaf<V> {
+    /// Hash a leaf node.
+    ///
+    /// Caller must ensure that the hasher is reset before calling this function.
     #[inline]
     pub fn hash_leaf<H: PortableHasher<32>>(&self, hasher: &mut H) -> NodeHash {
         hasher.portable_update(self.key_hash.to_bytes());

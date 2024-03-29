@@ -2,9 +2,8 @@ pub(crate) mod nodes;
 
 use alloc::{boxed::Box, format};
 use core::mem;
-use sha2::{Digest, Sha256};
 
-use crate::{stored, KeyHash, NodeHash, PortableHash};
+use crate::{stored, KeyHash, NodeHash, PortableHash, PortableHasher};
 use crate::{
     stored::{
         merkle::{Snapshot, SnapshotBuilder},
@@ -26,8 +25,13 @@ impl<Db: DatabaseSet<V>, V: Clone + PortableHash> Transaction<SnapshotBuilder<Db
     /// Calling this method again will rewrite the nodes to the database.
     ///
     /// Caching writes is the responsibility of the `DatabaseSet` implementation.
+    ///
+    /// Caller must ensure that the hasher is reset before calling this method.
     #[inline]
-    pub fn commit(&self) -> Result<TrieRoot<NodeHash>, TrieError> {
+    pub fn commit(
+        &self,
+        hasher: &mut impl PortableHasher<32>,
+    ) -> Result<TrieRoot<NodeHash>, TrieError> {
         let store_modified_branch =
             &mut |hash: &NodeHash, branch: &Branch<NodeRef<V>>, left: NodeHash, right: NodeHash| {
                 let branch = Branch {
@@ -51,15 +55,18 @@ impl<Db: DatabaseSet<V>, V: Clone + PortableHash> Transaction<SnapshotBuilder<Db
                 .map_err(|e| format!("Error writing leaf {hash} to database: {e}").into())
         };
 
-        let root_hash = self.calc_root_hash_inner(store_modified_branch, store_modified_leaf)?;
+        let root_hash =
+            self.calc_root_hash_inner(hasher, store_modified_branch, store_modified_leaf)?;
         Ok(root_hash)
     }
 }
 
 impl<S: Store<V>, V: PortableHash> Transaction<S, V> {
+    /// Caller must ensure that the hasher is reset before calling this method.
     #[inline]
     pub fn calc_root_hash_inner(
         &self,
+        hasher: &mut impl PortableHasher<32>,
         on_modified_branch: &mut impl FnMut(
             &NodeHash,
             &Branch<NodeRef<V>>,
@@ -68,12 +75,10 @@ impl<S: Store<V>, V: PortableHash> Transaction<S, V> {
         ) -> Result<(), TrieError>,
         on_modified_leaf: &mut impl FnMut(&NodeHash, &Leaf<V>) -> Result<(), TrieError>,
     ) -> Result<TrieRoot<NodeHash>, TrieError> {
-        let mut hasher = Sha256::new();
-
         let root_hash = match &self.current_root {
             TrieRoot::Empty => return Ok(TrieRoot::Empty),
             TrieRoot::Node(node_ref) => Self::calc_root_hash_node(
-                &mut hasher,
+                hasher,
                 &self.data_store,
                 node_ref,
                 on_modified_leaf,
@@ -84,14 +89,20 @@ impl<S: Store<V>, V: PortableHash> Transaction<S, V> {
         Ok(TrieRoot::Node(root_hash))
     }
 
+    /// Calculate the root hash of the trie.
+    ///
+    /// Caller must ensure that the hasher is reset before calling this method.
     #[inline]
-    pub fn calc_root_hash(&self) -> Result<TrieRoot<NodeHash>, TrieError> {
-        self.calc_root_hash_inner(&mut |_, _, _, _| Ok(()), &mut |_, _| Ok(()))
+    pub fn calc_root_hash(
+        &self,
+        hasher: &mut impl PortableHasher<32>,
+    ) -> Result<TrieRoot<NodeHash>, TrieError> {
+        self.calc_root_hash_inner(hasher, &mut |_, _, _, _| Ok(()), &mut |_, _| Ok(()))
     }
 
     #[inline]
     fn calc_root_hash_node(
-        hasher: &mut Sha256,
+        hasher: &mut impl PortableHasher<32>,
         data_store: &S,
         node_ref: &NodeRef<V>,
         on_modified_leaf: &mut impl FnMut(&NodeHash, &Leaf<V>) -> Result<(), TrieError>,
@@ -130,15 +141,17 @@ impl<S: Store<V>, V: PortableHash> Transaction<S, V> {
                 on_modified_leaf(&hash, leaf)?;
                 Ok(hash)
             }
-            NodeRef::Stored(stored_idx) => data_store.calc_subtree_hash(*stored_idx).map_err(|e| {
-                format!(
-                    "Error in `calc_root_hash_node`: {e} at {file}:{line}:{column}",
-                    file = file!(),
-                    line = line!(),
-                    column = column!()
-                )
-                .into()
-            }),
+            NodeRef::Stored(stored_idx) => data_store
+                .calc_subtree_hash(hasher, *stored_idx)
+                .map_err(|e| {
+                    format!(
+                        "Error in `calc_root_hash_node`: {e} at {file}:{line}:{column}",
+                        file = file!(),
+                        line = line!(),
+                        column = column!()
+                    )
+                    .into()
+                }),
         }
     }
 }
