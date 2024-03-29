@@ -1,5 +1,5 @@
 use alloc::{boxed::Box, vec::Vec};
-use core::{iter, mem};
+use core::{fmt, iter, mem};
 
 use crate::{hash::PortableHasher, stored, KeyHash, NodeHash, PortableHash, PortableUpdate};
 
@@ -51,11 +51,28 @@ pub enum Node<B, L> {
 /// When executing in zkVM where a `Snapshot` is the DB, this is an in memory `Node`.
 /// When executing against a `SnapshotBuilder`, it's a reference to a `NodeHash`,
 /// which can in turn be used to retrieve the `Node`.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NodeRef<V> {
     ModBranch(Box<Branch<Self>>),
     ModLeaf(Box<Leaf<V>>),
     Stored(stored::Idx),
+}
+
+impl<V> NodeRef<V> {
+    #[inline(always)]
+    pub fn temp_null_stored() -> Self {
+        NodeRef::Stored(u32::MAX)
+    }
+}
+
+impl<V> fmt::Debug for NodeRef<V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ModBranch(b) => f.debug_tuple("ModBranch").field(b).finish(),
+            Self::ModLeaf(l) => f.debug_tuple("ModLeaf").field(l).finish(),
+            Self::Stored(idx) => f.debug_tuple("Stored").field(idx).finish(),
+        }
+    }
 }
 
 impl<V> From<Box<Branch<NodeRef<V>>>> for NodeRef<V> {
@@ -211,7 +228,7 @@ mod tests {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Branch<NR> {
     pub left: NR,
     pub right: NR,
@@ -223,6 +240,17 @@ pub struct Branch<NR> {
     /// The the segment of the hash key from the parent branch to `prior_word`.
     /// Will be empty if the parent_branch.mask.bit_idx / 32 ==  self.mask.bit_idx / 32.
     pub prefix: Vec<u32>,
+}
+
+impl<NR> fmt::Debug for Branch<NR> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Branch")
+            .field("mask", &self.mask)
+            .field("prior_word", &self.prior_word)
+            .field("prefix", &self.prefix)
+            .finish()
+    }
 }
 
 /// I'm counting on the compiler to optimize this out when matched immediately.
@@ -246,7 +274,7 @@ impl<NR> Branch<NR> {
         debug_assert!(word_idx < 8);
 
         debug_assert!(self.prefix.len() <= word_idx);
-        let prefix_offset = word_idx - self.prefix.len();
+        let prefix_offset = word_idx.saturating_sub(self.prefix.len() + 1);
 
         let prefix_diff = iter::zip(self.prefix.iter(), key_hash.0.iter().skip(prefix_offset))
             .enumerate()
@@ -370,7 +398,11 @@ impl<V> Branch<NodeRef<V>> {
             // word_idx: 2
             // branch.word_idx: 6
 
-            let prefix_start_idx = branch.mask.word_idx() - (branch.prefix.len() + 1);
+            debug_assert!(branch.prefix.len() <= word_idx);
+            let prefix_start_idx = branch
+                .mask
+                .word_idx()
+                .saturating_sub(branch.prefix.len() + 1);
             let check_prefix = iter::zip(
                 branch.prefix.iter(),
                 leaf.key_hash.0.iter().skip(prefix_start_idx),
@@ -386,8 +418,8 @@ impl<V> Branch<NodeRef<V>> {
         };
 
         let new_parent = Box::new(Branch {
-            left: NodeRef::Stored(0),
-            right: NodeRef::Stored(0),
+            left: NodeRef::temp_null_stored(),
+            right: NodeRef::temp_null_stored(),
             mask,
             prior_word,
             prefix,
@@ -485,10 +517,19 @@ impl<V> Branch<NodeRef<V>> {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Leaf<V> {
     pub key_hash: KeyHash,
     pub value: V,
+}
+
+impl<V> fmt::Debug for Leaf<V> {
+    #[inline]
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Leaf")
+            .field("key_hash", &self.key_hash)
+            .finish()
+    }
 }
 
 impl<V: PortableHash> PortableHash for Leaf<V> {

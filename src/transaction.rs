@@ -173,7 +173,6 @@ impl<S: Store<V>, V> Transaction<S, V> {
     ) -> Result<Option<&'root V>, TrieError> {
         loop {
             match node_ref {
-                // TODO check that the KeyPosition is optimized out.
                 NodeRef::ModBranch(branch) => match branch.descend(key_hash) {
                     KeyPosition::Left => node_ref = &branch.left,
                     KeyPosition::Right => node_ref = &branch.right,
@@ -205,8 +204,8 @@ impl<S: Store<V>, V> Transaction<S, V> {
             let node = data_store
                 .get_node(stored_idx)
                 .map_err(|e| format!("Error in `get_stored_node`: {e}"))?;
+
             match node {
-                // TODO check that the KeyPosition is optimized out.
                 Node::Branch(branch) => match branch.descend(key_hash) {
                     KeyPosition::Left => stored_idx = branch.left,
                     KeyPosition::Right => stored_idx = branch.right,
@@ -317,7 +316,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
 
                         return Ok(());
                     } else {
-                        let old_leaf = mem::replace(node_ref, NodeRef::Stored(0));
+                        let old_leaf = mem::replace(node_ref, NodeRef::temp_null_stored());
                         let NodeRef::ModLeaf(old_leaf) = old_leaf else {
                             unreachable!("We just matched a ModLeaf");
                         };
@@ -629,7 +628,10 @@ impl<'a, V> VacantEntry<'a, V> {
     pub fn insert(self, value: V) -> &'a mut V {
         let VacantEntry { parent, key_hash } = self;
         if let NodeRef::ModBranch(branch) = parent {
-            debug_assert!(matches!(branch.descend(&key_hash), KeyPosition::PrefixWord));
+            debug_assert!(matches!(
+                branch.descend(&key_hash),
+                KeyPosition::PrefixWord | KeyPosition::PriorWord | KeyPosition::PrefixVec { .. }
+            ));
 
             let leaf = Branch::new_at_branch_ret(
                 branch.mask.word_idx(),
@@ -640,7 +642,7 @@ impl<'a, V> VacantEntry<'a, V> {
             return &mut leaf.value;
         };
 
-        let owned_parent = mem::replace(parent, NodeRef::Stored(0));
+        let owned_parent = mem::replace(parent, NodeRef::temp_null_stored());
         match owned_parent {
             NodeRef::ModLeaf(old_leaf) => {
                 let (new_branch, new_leaf_is_right) =
