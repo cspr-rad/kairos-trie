@@ -1,4 +1,4 @@
-use alloc::{rc::Rc, sync::Arc};
+use alloc::{boxed::Box, rc::Rc, string::String, sync::Arc, vec::Vec};
 
 pub trait PortableHasher<const LEN: usize>: PortableUpdate + Default {
     fn finalize_reset(&mut self) -> [u8; LEN];

@@ -1,3 +1,7 @@
+use alloc::{
+    boxed::Box,
+    string::{String, ToString},
+};
 use core::fmt::{self, Display, Formatter};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
