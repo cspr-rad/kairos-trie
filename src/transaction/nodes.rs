@@ -1,4 +1,4 @@
-use alloc::{boxed::Box, vec::Vec};
+use alloc::boxed::Box;
 use core::{fmt, iter, mem};
 
 use crate::{hash::PortableHasher, stored, KeyHash, NodeHash, PortableHash, PortableUpdate};
@@ -251,7 +251,7 @@ pub struct Branch<NR> {
     pub prior_word: u32,
     /// The the segment of the hash key from the parent branch to `prior_word`.
     /// Will be empty if the parent_branch.mask.bit_idx / 32 ==  self.mask.bit_idx / 32.
-    pub prefix: Vec<u32>,
+    pub prefix: Box<[u32]>,
 }
 
 impl<NR> fmt::Debug for Branch<NR> {
@@ -357,7 +357,7 @@ impl<V> Branch<NodeRef<V>> {
             mask: branch.mask,
             prior_word: branch.prior_word,
             // TODO remove the clone
-            // Maybe use a AsRef<[u32]> instead of Vec<u32>
+            // Maybe use a AsRef<[u32]> instead of Box<[u32]>
             prefix: branch.prefix.clone(),
         }
     }
@@ -446,9 +446,8 @@ impl<V> Branch<NodeRef<V>> {
 
                 let prefix_offset = word_idx.saturating_sub(self.prefix.len() + 1);
 
-                let new_prefix =
-                    leaf.key_hash.0[prefix_offset..word_idx.saturating_sub(1)].to_vec();
-                let old_prefix = self.prefix[word_idx + 1 - prefix_offset..].to_vec();
+                let new_prefix = leaf.key_hash.0[prefix_offset..word_idx.saturating_sub(1)].into();
+                let old_prefix = self.prefix[word_idx + 1 - prefix_offset..].into();
 
                 let branch_word = self.prefix[word_idx - prefix_offset];
                 let leaf_word = leaf.key_hash.0[word_idx];
@@ -518,7 +517,7 @@ impl<V> Branch<NodeRef<V>> {
         debug_assert!(new_leaf.key_hash.0[..word_idx] == old_leaf.as_ref().key_hash.0[..word_idx]);
 
         let prior_word_idx = word_idx.saturating_sub(1);
-        let prefix = new_leaf.key_hash.0[prefix_start_idx..prior_word_idx].to_vec();
+        let prefix = new_leaf.key_hash.0[prefix_start_idx..prior_word_idx].into();
         let prior_word = if word_idx == 0 {
             0
         } else {
