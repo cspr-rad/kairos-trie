@@ -17,7 +17,7 @@ use self::nodes::{
 };
 
 pub struct Transaction<S, V> {
-    data_store: S,
+    pub data_store: S,
     current_root: TrieRoot<NodeRef<V>>,
 }
 
