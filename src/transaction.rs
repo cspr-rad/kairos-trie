@@ -493,6 +493,22 @@ impl<'a, V> Entry<'a, V> {
     }
 
     #[inline]
+    pub fn get_mut(&mut self) -> Option<&mut V> {
+        match self {
+            Entry::Occupied(OccupiedEntry { leaf }) => Some(&mut leaf.value),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    pub fn into_mut(self) -> Option<&'a mut V> {
+        match self {
+            Entry::Occupied(OccupiedEntry { leaf }) => Some(&mut leaf.value),
+            _ => None,
+        }
+    }
+
+    #[inline]
     pub fn or_insert(self, value: V) -> &'a mut V {
         self.or_insert_with(|| value)
     }
