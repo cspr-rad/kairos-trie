@@ -508,6 +508,19 @@ impl<'a, V> Entry<'a, V> {
         }
     }
 
+    /// Prefer `Transaction::insert` over `Entry::insert` if you are not using any other `Entry` methods.
+    #[inline]
+    pub fn insert(self, value: V) -> &'a mut V {
+        match self {
+            Entry::Occupied(mut o) => {
+                o.insert(value);
+                o.into_mut()
+            }
+            Entry::VacantEmptyTrie(entry) => entry.insert(value),
+            Entry::Vacant(entry) => entry.insert(value),
+        }
+    }
+
     #[inline]
     pub fn or_insert(self, value: V) -> &'a mut V {
         self.or_insert_with(|| value)
