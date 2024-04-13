@@ -267,13 +267,13 @@ impl<NR> fmt::Debug for Branch<NR> {
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum KeyPosition {
-    Adjecent(KeyPositionAdjecent),
+    Adjacent(KeyPositionAdjacent),
     Right,
     Left,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum KeyPositionAdjecent {
+pub enum KeyPositionAdjacent {
     /// The delta bit occurs before the existing branch's discriminant bit in the same word.
     /// `branch.mask.word_idx() == PrefixOfWord(word_idx)`.
     PrefixOfWord(usize),
@@ -303,7 +303,7 @@ impl<NR> Branch<NR> {
         .find(|(branch_word, (_, key_word))| branch_word != key_word);
 
         if let Some((_, (idx, _))) = prefix_diff {
-            return KeyPosition::Adjecent(KeyPositionAdjecent::PrefixVec(idx));
+            return KeyPosition::Adjacent(KeyPositionAdjacent::PrefixVec(idx));
         }
 
         // If sub wraps around to the last word, the prior word is 0.
@@ -311,7 +311,7 @@ impl<NR> Branch<NR> {
         let prior_word = key_hash.0.get(prior_word_idx).unwrap_or(&0);
 
         if self.prior_word != *prior_word {
-            return KeyPosition::Adjecent(KeyPositionAdjecent::PriorWord(prior_word_idx));
+            return KeyPosition::Adjacent(KeyPositionAdjacent::PriorWord(prior_word_idx));
         }
 
         let hash_segment = key_hash.0[word_idx];
@@ -321,7 +321,7 @@ impl<NR> Branch<NR> {
         } else if self.mask.is_right_descendant(hash_segment) {
             KeyPosition::Right
         } else {
-            KeyPosition::Adjecent(KeyPositionAdjecent::PrefixOfWord(word_idx))
+            KeyPosition::Adjacent(KeyPositionAdjacent::PrefixOfWord(word_idx))
         }
     }
 
@@ -369,7 +369,7 @@ impl<V> Branch<NodeRef<V>> {
     #[inline]
     pub(crate) fn new_adjacent_leaf(
         self: &mut Box<Self>,
-        key_position: KeyPositionAdjecent,
+        key_position: KeyPositionAdjacent,
         leaf: Box<Leaf<V>>,
     ) {
         self.new_adjacent_leaf_ret(key_position, leaf);
@@ -378,15 +378,15 @@ impl<V> Branch<NodeRef<V>> {
     /// Store a new leaf adjacent to an existing branch.
     /// New branch will be stored in the old branch's Box.
     /// The old branch will be moved to a new Box, under the new branch.
-    // inline(always) is used to increace the odds of the compiler removing the return when unused.
+    // inline(always) is used to increase the odds of the compiler removing the return when unused.
     #[inline(always)]
     pub(crate) fn new_adjacent_leaf_ret<'a>(
         self: &'a mut Box<Self>,
-        key_position: KeyPositionAdjecent,
+        key_position: KeyPositionAdjacent,
         leaf: Box<Leaf<V>>,
     ) -> &'a mut Leaf<V> {
         let (mask, prior_word, prefix, leaf_word) = match key_position {
-            KeyPositionAdjecent::PrefixOfWord(word_idx) => {
+            KeyPositionAdjacent::PrefixOfWord(word_idx) => {
                 debug_assert_eq!(self.mask.word_idx(), word_idx);
 
                 let branch_word = self.mask.left_prefix;
@@ -414,7 +414,7 @@ impl<V> Branch<NodeRef<V>> {
                     leaf_word,
                 )
             }
-            KeyPositionAdjecent::PriorWord(word_idx) => {
+            KeyPositionAdjacent::PriorWord(word_idx) => {
                 debug_assert_eq!(word_idx, self.mask.word_idx() - 1);
 
                 let branch_word = self.prior_word;
@@ -429,7 +429,7 @@ impl<V> Branch<NodeRef<V>> {
 
                 (mask, *prior_word, mem::take(&mut self.prefix), leaf_word)
             }
-            KeyPositionAdjecent::PrefixVec(word_idx) => {
+            KeyPositionAdjacent::PrefixVec(word_idx) => {
                 debug_assert!(self.mask.word_idx() - word_idx >= 2);
                 debug_assert!(!self.prefix.is_empty());
 

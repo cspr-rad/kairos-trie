@@ -13,7 +13,7 @@ use crate::{
 };
 
 use self::nodes::{
-    Branch, KeyPosition, KeyPositionAdjecent, Leaf, Node, NodeRef, StoredLeafRef, TrieRoot,
+    Branch, KeyPosition, KeyPositionAdjacent, Leaf, Node, NodeRef, StoredLeafRef, TrieRoot,
 };
 
 pub struct Transaction<S, V> {
@@ -178,7 +178,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
                 NodeRef::ModBranch(branch) => match branch.key_position(key_hash) {
                     KeyPosition::Left => node_ref = &branch.left,
                     KeyPosition::Right => node_ref = &branch.right,
-                    KeyPosition::Adjecent(_) => return Ok(None),
+                    KeyPosition::Adjacent(_) => return Ok(None),
                 },
                 NodeRef::ModLeaf(leaf) => {
                     if leaf.key_hash == *key_hash {
@@ -209,7 +209,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
                 Node::Branch(branch) => match branch.key_position(key_hash) {
                     KeyPosition::Left => stored_idx = branch.left,
                     KeyPosition::Right => stored_idx = branch.right,
-                    KeyPosition::Adjecent(_) => return Ok(None),
+                    KeyPosition::Adjacent(_) => return Ok(None),
                 },
                 Node::Leaf(leaf) => {
                     if leaf.key_hash == *key_hash {
@@ -264,7 +264,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
                         node_ref = &mut branch.right;
                         continue;
                     }
-                    KeyPosition::Adjecent(pos) => {
+                    KeyPosition::Adjacent(pos) => {
                         branch.new_adjacent_leaf(
                             pos,
                             Box::new(Leaf {
@@ -349,11 +349,11 @@ impl<S: Store<V>, V: PortableHash + Clone> Transaction<S, V> {
     /// We match the standard library's `Entry` API for the most part.
     ///
     /// Note: Use of `entry` renders the trie path even if the entry is not modified.
-    /// This will incures allocations, now and unessisary rehashing later when calculating the root hash.
+    /// This incurs allocations, now and unnecessary rehashing later when calculating the root hash.
     /// For this reason you should prefer `get` if you have a high probability of not modifying the entry.
     #[inline]
     pub fn entry<'txn>(&'txn mut self, key_hash: &KeyHash) -> Result<Entry<'txn, V>, TrieError> {
-        let mut key_position = KeyPositionAdjecent::PrefixOfWord(usize::MAX);
+        let mut key_position = KeyPositionAdjacent::PrefixOfWord(usize::MAX);
 
         match self.current_root {
             TrieRoot::Empty => Ok(Entry::VacantEmptyTrie(VacantEntryEmptyTrie {
@@ -367,7 +367,7 @@ impl<S: Store<V>, V: PortableHash + Clone> Transaction<S, V> {
                         NodeRef::ModBranch(branch) => match branch.key_position(key_hash) {
                             KeyPosition::Left => false,
                             KeyPosition::Right => true,
-                            KeyPosition::Adjecent(pos) => {
+                            KeyPosition::Adjacent(pos) => {
                                 key_position = pos;
                                 break;
                             }
@@ -411,11 +411,11 @@ impl<S: Store<V>, V: PortableHash + Clone> Transaction<S, V> {
                 // This convoluted return makes the borrow checker happy.
                 if let NodeRef::ModLeaf(leaf) = &*node_ref {
                     if leaf.key_hash != *key_hash {
-                        // This is bassically a logical null
+                        // This is a logical null
                         // TODO we should break VacantEntry into two types VacantEntryBranch and VacantEntryLeaf
                         debug_assert_eq!(
                             key_position,
-                            KeyPositionAdjecent::PrefixOfWord(usize::MAX)
+                            KeyPositionAdjacent::PrefixOfWord(usize::MAX)
                         );
 
                         return Ok(Entry::Vacant(VacantEntry {
@@ -620,7 +620,7 @@ impl<'a, V> OccupiedEntry<'a, V> {
 pub struct VacantEntry<'a, V> {
     parent: &'a mut NodeRef<V>,
     key_hash: KeyHash,
-    key_position: KeyPositionAdjecent,
+    key_position: KeyPositionAdjacent,
 }
 
 impl<'a, V> VacantEntry<'a, V> {
