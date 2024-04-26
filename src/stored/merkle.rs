@@ -16,6 +16,8 @@ type Result<T, E = TrieError> = core::result::Result<T, E>;
 /// A snapshot of the merkle trie
 ///
 /// Contains visited nodes and unvisited nodes
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot<V> {
     /// The last branch is the root of the trie if it exists.

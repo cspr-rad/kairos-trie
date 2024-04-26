@@ -3,6 +3,7 @@ use core::{fmt, iter, mem};
 
 use crate::{hash::PortableHasher, stored, KeyHash, NodeHash, PortableHash, PortableUpdate};
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Default)]
 pub enum TrieRoot<T> {
     #[default]
@@ -38,6 +39,7 @@ impl From<TrieRoot<NodeHash>> for Option<NodeHash> {
 }
 
 /// A unmodified Node
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Node<B, L> {
     Branch(B),
@@ -115,6 +117,7 @@ impl<'s, V> StoredLeafRef<'s, V> {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct BranchMask {
     /// The index of the discriminant bit in the 256 bit hash key.
@@ -240,6 +243,7 @@ mod tests {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Branch<NR> {
     pub left: NR,
@@ -562,6 +566,7 @@ impl<V> Branch<NodeRef<V>> {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Leaf<V> {
     pub key_hash: KeyHash,
