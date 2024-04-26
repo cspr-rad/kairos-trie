@@ -18,6 +18,7 @@ pub use transaction::{
     Entry, OccupiedEntry, Transaction, VacantEntry, VacantEntryEmptyTrie,
 };
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct KeyHash(pub [u32; 8]);
 
@@ -72,6 +73,7 @@ impl PortableHash for KeyHash {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct NodeHash {
     pub bytes: [u8; 32],
