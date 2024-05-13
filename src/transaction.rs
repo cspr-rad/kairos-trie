@@ -466,8 +466,20 @@ impl<Db, V: PortableHash + Clone> Transaction<SnapshotBuilder<Db, V>, V> {
 }
 
 impl<'s, V: PortableHash + Clone> Transaction<&'s Snapshot<V>, V> {
+    /// Create a `Transaction` from a borrowed `Snapshot`.
     #[inline]
     pub fn from_snapshot(snapshot: &'s Snapshot<V>) -> Result<Self, TrieError> {
+        Ok(Transaction {
+            current_root: snapshot.trie_root()?,
+            data_store: snapshot,
+        })
+    }
+}
+
+impl<V: PortableHash + Clone> Transaction<Snapshot<V>, V> {
+    /// Create a `Transaction` from a owned `Snapshot`.
+    #[inline]
+    pub fn from_snapshot_owned(snapshot: Snapshot<V>) -> Result<Self, TrieError> {
         Ok(Transaction {
             current_root: snapshot.trie_root()?,
             data_store: snapshot,
