@@ -19,6 +19,13 @@ impl<H: digest::Digest> Default for DigestHasher<H> {
     }
 }
 
+impl<H: digest::Digest> DigestHasher<H> {
+    #[inline(always)]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 impl<const LEN: usize, H: digest::Digest + digest::FixedOutputReset> PortableHasher<LEN>
     for DigestHasher<H>
 where
