@@ -194,7 +194,7 @@ impl<Db: 'static + DatabaseGet<V>, V: Clone> Transaction<SnapshotBuilder<Db, V>,
                 },
                 NodeRef::ModLeaf(leaf) => {
                     if leaf.key_hash == *key_hash {
-                        return Ok(Some(std::borrow::Cow::Borrowed(&leaf.value)));
+                        return Ok(Some(Cow::Borrowed(&leaf.value)));
                     } else {
                         return Ok(None);
                     }
