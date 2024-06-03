@@ -551,6 +551,17 @@ impl<Db, V: PortableHash + Clone> Transaction<SnapshotBuilder<Db, V>, V> {
     }
 }
 
+impl<Db, V: PortableHash + Clone> TryFrom<SnapshotBuilder<Db, V>>
+    for Transaction<SnapshotBuilder<Db, V>, V>
+{
+    type Error = TrieError;
+
+    #[inline]
+    fn try_from(value: SnapshotBuilder<Db, V>) -> Result<Self, Self::Error> {
+        Ok(Transaction::from_snapshot_builder(value))
+    }
+}
+
 impl<'s, V: PortableHash + Clone> Transaction<&'s Snapshot<V>, V> {
     /// Create a `Transaction` from a borrowed `Snapshot`.
     #[inline]
@@ -570,6 +581,24 @@ impl<V: PortableHash + Clone> Transaction<Snapshot<V>, V> {
             current_root: snapshot.trie_root()?,
             data_store: snapshot,
         })
+    }
+}
+
+impl<'s, V: PortableHash + Clone> TryFrom<&'s Snapshot<V>> for Transaction<&'s Snapshot<V>, V> {
+    type Error = TrieError;
+
+    #[inline]
+    fn try_from(value: &'s Snapshot<V>) -> Result<Self, Self::Error> {
+        Self::from_snapshot(value)
+    }
+}
+
+impl<V: PortableHash + Clone> TryFrom<Snapshot<V>> for Transaction<Snapshot<V>, V> {
+    type Error = TrieError;
+
+    #[inline]
+    fn try_from(value: Snapshot<V>) -> Result<Self, Self::Error> {
+        Self::from_snapshot_owned(value)
     }
 }
 

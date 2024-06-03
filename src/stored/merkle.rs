@@ -16,7 +16,6 @@ type Result<T, E = TrieError> = core::result::Result<T, E>;
 /// A snapshot of the merkle trie
 ///
 /// Contains visited nodes and unvisited nodes
-
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot<V> {
@@ -66,6 +65,11 @@ impl<V: PortableHash> Snapshot<V> {
         }
     }
 
+    /// Calculate the merkle root hash of the snapshot.
+    /// This computation can be thought of as verifying a Snapshot has a particular Merkle root hash.
+    /// However, in reality, it is calculating the root hash of the snapshot
+    /// by visiting all nodes touched by the transaction.
+    ///
     /// Always check that the snapshot is of the merkle tree you expect.
     #[inline]
     pub fn calc_root_hash(
@@ -147,8 +151,12 @@ impl<V: PortableHash> Store<V> for Snapshot<V> {
 
 type NodeHashMaybeNode<'a, V> = (&'a NodeHash, Option<Node<&'a Branch<Idx>, &'a Leaf<V>>>);
 
-#[self_referencing]
 pub struct SnapshotBuilder<Db: 'static, V: 'static> {
+    inner: SnapshotBuilderInner<Db, V>,
+}
+
+#[self_referencing]
+struct SnapshotBuilderInner<Db: 'static, V: 'static> {
     db: Db,
     bump: Bump,
 
@@ -169,7 +177,7 @@ impl<Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<Db, V> {
     ) -> Result<NodeHash, Self::Error> {
         let hash_idx = hash_idx as usize;
 
-        self.with_nodes(|nodes| {
+        self.inner.with_nodes(|nodes| {
             let nodes = nodes.borrow();
             nodes.get(hash_idx).map(|(hash, _)| **hash).ok_or_else(|| {
                 format!(
@@ -186,7 +194,7 @@ impl<Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<Db, V> {
     #[inline]
     fn get_node(&self, hash_idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>, Self::Error> {
         let hash_idx = hash_idx as usize;
-        self.with(|this| {
+        self.inner.with(|this| {
             let mut nodes = this.nodes.borrow_mut();
 
             let Some((hash, o_node)) = nodes.get(hash_idx).map(|(hash, o_node)| (hash, *o_node))
@@ -242,34 +250,36 @@ impl<Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<Db, V> {
     }
 }
 
+impl<Db, V> SnapshotBuilderInner<Db, V> {
+    fn new_with_db(db: Db) -> Self {
+        SnapshotBuilderInnerBuilder {
+            db,
+            bump: Bump::new(),
+            nodes_builder: |_| RefCell::new(Vec::new()),
+        }
+        .build()
+    }
+}
+
 impl<Db, V> SnapshotBuilder<Db, V> {
     /// Create a new `SnapshotBuilder` with the given database from a trie root hash.
     ///
     /// This is an alias for `SnapshotBuilderBuilder::empty(db).with_trie_root_hash(root_hash)`.
     #[inline]
-    pub fn new_with_root(db: Db, root_hash: TrieRoot<NodeHash>) -> Self {
-        SnapshotBuilderBuilder {
-            db,
-            bump: Bump::new(),
-            nodes_builder: |_| RefCell::new(Vec::new()),
-        }
-        .build()
-        .with_trie_root_hash(root_hash)
+    pub fn new(db: Db, root_hash: TrieRoot<NodeHash>) -> Self {
+        SnapshotBuilder::empty(db).with_trie_root_hash(root_hash)
     }
 
     #[inline]
     pub fn empty(db: Db) -> Self {
-        SnapshotBuilderBuilder {
-            db,
-            bump: Bump::new(),
-            nodes_builder: |_| RefCell::new(Vec::new()),
+        SnapshotBuilder {
+            inner: SnapshotBuilderInner::new_with_db(db),
         }
-        .build()
     }
 
     #[inline]
     pub fn db(&self) -> &Db {
-        self.borrow_db()
+        self.inner.borrow_db()
     }
 
     #[inline]
@@ -282,7 +292,7 @@ impl<Db, V> SnapshotBuilder<Db, V> {
 
     #[inline]
     pub fn with_root_hash(self, root_hash: NodeHash) -> Self {
-        self.with(|this| {
+        self.inner.with(|this| {
             let root_hash = this.bump.alloc(root_hash);
             this.nodes.borrow_mut().push((&*root_hash, None));
         });
@@ -291,7 +301,7 @@ impl<Db, V> SnapshotBuilder<Db, V> {
 
     #[inline]
     pub fn trie_root(&self) -> TrieRoot<NodeRef<V>> {
-        self.with_nodes(|nodes| match nodes.borrow().first() {
+        self.inner.with_nodes(|nodes| match nodes.borrow().first() {
             Some(_) => TrieRoot::Node(NodeRef::Stored(0)),
             None => TrieRoot::Empty,
         })
@@ -299,7 +309,7 @@ impl<Db, V> SnapshotBuilder<Db, V> {
 
     #[inline]
     pub fn get_node_hash(&self, idx: Idx) -> Result<NodeHash, TrieError> {
-        self.with_nodes(|nodes| {
+        self.inner.with_nodes(|nodes| {
             let nodes = nodes.borrow();
             nodes
                 .get(idx as usize)
@@ -320,7 +330,7 @@ impl<Db, V> SnapshotBuilder<Db, V> {
     where
         V: Clone,
     {
-        self.with_nodes(|nodes| {
+        self.inner.with_nodes(|nodes| {
             let nodes = nodes.borrow();
             if nodes.is_empty() {
                 Snapshot {
