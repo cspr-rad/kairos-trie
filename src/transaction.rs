@@ -1,8 +1,10 @@
 pub(crate) mod nodes;
 
+use alloc::borrow::Cow;
 use alloc::{boxed::Box, format};
 use core::{mem, usize};
 
+use crate::stored::DatabaseGet;
 use crate::{stored, KeyHash, NodeHash, PortableHash, PortableHasher};
 use crate::{
     stored::{
@@ -158,6 +160,90 @@ impl<S: Store<V>, V: PortableHash> Transaction<S, V> {
     }
 }
 
+impl<Db: 'static + DatabaseGet<V>, V: Clone> Transaction<SnapshotBuilder<Db, V>, V> {
+    /// This method is like standard `Transaction::get` but won't affect the Transaction or any Snapshot built from it.
+    /// You should use this method to check precondition before modifying the Transaction.
+    ///
+    /// If you use the normal get, and then don't modify the trie,
+    /// you will still have added the merkle path to the snapshot, which is unnecessary.
+    #[inline]
+    pub fn get_exclude_from_txn<'s>(
+        &'s self,
+        key_hash: &KeyHash,
+    ) -> Result<Option<Cow<'s, V>>, TrieError> {
+        match &self.current_root {
+            TrieRoot::Empty => Ok(None),
+            TrieRoot::Node(node_ref) => {
+                Self::get_node_exclude_from_txn(&self.data_store, node_ref, key_hash)
+            }
+        }
+    }
+
+    #[inline]
+    fn get_node_exclude_from_txn<'root, 's: 'root>(
+        data_store: &'s SnapshotBuilder<Db, V>,
+        mut node_ref: &'root NodeRef<V>,
+        key_hash: &KeyHash,
+    ) -> Result<Option<Cow<'root, V>>, TrieError> {
+        loop {
+            match node_ref {
+                NodeRef::ModBranch(branch) => match branch.key_position(key_hash) {
+                    KeyPosition::Left => node_ref = &branch.left,
+                    KeyPosition::Right => node_ref = &branch.right,
+                    KeyPosition::Adjacent(_) => return Ok(None),
+                },
+                NodeRef::ModLeaf(leaf) => {
+                    if leaf.key_hash == *key_hash {
+                        return Ok(Some(std::borrow::Cow::Borrowed(&leaf.value)));
+                    } else {
+                        return Ok(None);
+                    }
+                }
+                NodeRef::Stored(stored_idx) => {
+                    let stored_hash = data_store
+                        .get_node_hash(*stored_idx)
+                        .map_err(|e| format!("Error in `get_node_exclude_from_txn`: {e}"))?;
+
+                    return Self::get_stored_node_exclude_from_txn(
+                        data_store.db(),
+                        stored_hash,
+                        key_hash,
+                    )
+                    .map(|v| v.map(Cow::Owned));
+                }
+            }
+        }
+    }
+
+    #[inline]
+    fn get_stored_node_exclude_from_txn(
+        database: &Db,
+        mut stored_hash: NodeHash,
+        key_hash: &KeyHash,
+    ) -> Result<Option<V>, TrieError> {
+        loop {
+            let node = database
+                .get(&stored_hash)
+                .map_err(|e| format!("Error in `get_stored_node_exclude_from_txn`: {e}"))?;
+
+            match node {
+                Node::Branch(branch) => match branch.key_position(key_hash) {
+                    KeyPosition::Left => stored_hash = branch.left,
+                    KeyPosition::Right => stored_hash = branch.right,
+                    KeyPosition::Adjacent(_) => return Ok(None),
+                },
+                Node::Leaf(leaf) => {
+                    if leaf.key_hash == *key_hash {
+                        return Ok(Some(leaf.value));
+                    } else {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl<S: Store<V>, V> Transaction<S, V> {
     #[inline]
     pub fn get(&self, key_hash: &KeyHash) -> Result<Option<&V>, TrieError> {
@@ -168,7 +254,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
     }
 
     #[inline]
-    pub fn get_node<'root, 's: 'root>(
+    fn get_node<'root, 's: 'root>(
         data_store: &'s S,
         mut node_ref: &'root NodeRef<V>,
         key_hash: &KeyHash,
@@ -195,7 +281,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
     }
 
     #[inline]
-    pub fn get_stored_node<'s>(
+    fn get_stored_node<'s>(
         data_store: &'s S,
         mut stored_idx: stored::Idx,
         key_hash: &KeyHash,

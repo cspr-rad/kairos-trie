@@ -243,6 +243,20 @@ impl<Db: DatabaseGet<V>, V: Clone> Store<V> for SnapshotBuilder<Db, V> {
 }
 
 impl<Db, V> SnapshotBuilder<Db, V> {
+    /// Create a new `SnapshotBuilder` with the given database from a trie root hash.
+    ///
+    /// This is an alias for `SnapshotBuilderBuilder::empty(db).with_trie_root_hash(root_hash)`.
+    #[inline]
+    pub fn new_with_root(db: Db, root_hash: TrieRoot<NodeHash>) -> Self {
+        SnapshotBuilderBuilder {
+            db,
+            bump: Bump::new(),
+            nodes_builder: |_| RefCell::new(Vec::new()),
+        }
+        .build()
+        .with_trie_root_hash(root_hash)
+    }
+
     #[inline]
     pub fn empty(db: Db) -> Self {
         SnapshotBuilderBuilder {
@@ -280,6 +294,24 @@ impl<Db, V> SnapshotBuilder<Db, V> {
         self.with_nodes(|nodes| match nodes.borrow().first() {
             Some(_) => TrieRoot::Node(NodeRef::Stored(0)),
             None => TrieRoot::Empty,
+        })
+    }
+
+    #[inline]
+    pub fn get_node_hash(&self, idx: Idx) -> Result<NodeHash, TrieError> {
+        self.with_nodes(|nodes| {
+            let nodes = nodes.borrow();
+            nodes
+                .get(idx as usize)
+                .map(|(hash, _)| **hash)
+                .ok_or_else(|| {
+                    TrieError::from(format!(
+                        "Invalid snapshot: no node at index {}\n\
+                    SnapshotBuilder has {} nodes",
+                        idx,
+                        nodes.len()
+                    ))
+                })
         })
     }
 
