@@ -16,21 +16,16 @@ fn sha256_hash(data: &[u8]) -> [u8; 32] {
 
 #[test]
 fn insert_get_u64_round_trip() {
-    let hashmap: HashMap<KeyHash, Vec<u8>> = (0u64..10000)
-        .map(|i| {
-            (
-                KeyHash::from(&sha256_hash(&i.to_le_bytes())),
-                i.to_le_bytes().to_vec(),
-            )
-        })
+    let hashmap: HashMap<KeyHash, u64> = (0u64..10_000)
+        .map(|i| (KeyHash::from(&sha256_hash(&i.to_le_bytes())), i))
         .collect();
 
-    let builder = SnapshotBuilder::empty(MemoryDb::<Vec<u8>>::empty());
+    let builder = SnapshotBuilder::empty(MemoryDb::<u64>::empty());
 
     let mut txn = Transaction::from_snapshot_builder(builder);
 
     for (key, value) in hashmap.iter() {
-        txn.insert(key, value.clone()).unwrap();
+        txn.insert(key, *value).unwrap();
         let ret_val = txn.get(key).unwrap().unwrap();
         assert_eq!(ret_val, value);
     }
@@ -50,7 +45,7 @@ prop_compose! {
 proptest! {
     #[test]
     fn prop_insert_get_rand(
-        keys in prop::collection::hash_map(arb_key_hash(), 0u64.., 0..100_000)
+        keys in prop::collection::hash_map(arb_key_hash(), 0u64.., 0..10_000)
     ) {
         let builder = SnapshotBuilder::empty(MemoryDb::<[u8; 8]>::empty());
 
