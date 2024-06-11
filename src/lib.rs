@@ -100,3 +100,17 @@ impl Display for NodeHash {
         write!(f, "NodeHash({:?})", &self.bytes)
     }
 }
+
+impl From<[u8; 32]> for NodeHash {
+    #[inline]
+    fn from(bytes: [u8; 32]) -> Self {
+        Self::new(bytes)
+    }
+}
+
+impl From<&[u8; 32]> for NodeHash {
+    #[inline]
+    fn from(bytes: &[u8; 32]) -> Self {
+        Self::new(*bytes)
+    }
+}

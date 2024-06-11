@@ -38,6 +38,26 @@ impl From<TrieRoot<NodeHash>> for Option<NodeHash> {
     }
 }
 
+impl From<TrieRoot<NodeHash>> for Option<[u8; 32]> {
+    #[inline]
+    fn from(value: TrieRoot<NodeHash>) -> Self {
+        match value {
+            TrieRoot::Empty => None,
+            TrieRoot::Node(hash) => Some(hash.bytes),
+        }
+    }
+}
+
+impl From<Option<[u8; 32]>> for TrieRoot<NodeHash> {
+    #[inline]
+    fn from(hash: Option<[u8; 32]>) -> Self {
+        match hash {
+            Some(hash) => Self::Node(NodeHash::new(hash)),
+            None => Self::Empty,
+        }
+    }
+}
+
 /// A unmodified Node
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
