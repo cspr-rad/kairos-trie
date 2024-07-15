@@ -197,6 +197,19 @@ impl PortableHash for &Vec<char> {
     }
 }
 
+impl PortableHash for str {
+    #[inline]
+    fn portable_hash<H: PortableUpdate>(&self, hasher: &mut H) {
+        hasher.portable_update(self.as_bytes());
+    }
+}
+impl PortableHash for &str {
+    #[inline]
+    fn portable_hash<H: PortableUpdate>(&self, hasher: &mut H) {
+        hasher.portable_update(self.as_bytes());
+    }
+}
+
 impl PortableHash for String {
     #[inline]
     fn portable_hash<H: PortableUpdate>(&self, hasher: &mut H) {
