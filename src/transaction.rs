@@ -2,7 +2,7 @@ pub(crate) mod nodes;
 
 use alloc::borrow::Cow;
 use alloc::{boxed::Box, format};
-use core::{mem, usize};
+use core::mem;
 
 use crate::stored::DatabaseGet;
 use crate::{stored, KeyHash, NodeHash, PortableHash, PortableHasher};
