@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-use core::{fmt, iter, mem};
+use core::{fmt, iter, mem, slice, usize};
 
 use crate::{hash::PortableHasher, stored, KeyHash, NodeHash, PortableHash, PortableUpdate};
 
@@ -263,19 +263,68 @@ mod tests {
     }
 }
 
+pub struct Prefix {
+    /// This value will be 0 if the branch occurs in the first word of the hash key.
+    /// The value is the prior word if the branches parent's word index no more than 1 less.
+    /// If the parent's word index is more than 1 word prior,
+    /// we must store the multiword prefix outside of the branch, so the value is the index of the prefix.
+    /// The length of the prefix is the difference between the parent's word index and the branch's word index.
+    prior_word_or_prefix_idx: u32,
+}
+
+impl Prefix {
+    pub fn get_prefix<'s, 'txn: 's>(
+        &'s self,
+        prefixies: &'txn PrefixesBuffer,
+        word_idx: usize,
+        parent_word_idx: usize,
+    ) -> Option<&'s [u32]> {
+        if word_idx - parent_word_idx <= 1 {
+            if cfg!(debug_assertions) && word_idx == 0 {
+                debug_assert_eq!(self.prior_word_or_prefix_idx, 0);
+            }
+
+            Some(slice::from_ref(&self.prior_word_or_prefix_idx))
+        } else {
+            let prefix_len = word_idx - parent_word_idx;
+            debug_assert!(prefix_len > 1);
+            prefixies.get_prefix(
+                self.prior_word_or_prefix_idx as usize,
+                word_idx - parent_word_idx,
+            )
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PrefixesBuffer {
+    buffer: Vec<u32>,
+}
+
+impl PrefixesBuffer {
+    pub fn new() -> Self {
+        Self { buffer: Vec::new() }
+    }
+
+    pub fn push_prefix(&mut self, prefix: &[u32]) -> u32 {
+        let idx = self.buffer.len() as u32;
+        self.buffer.extend_from_slice(prefix);
+        idx
+    }
+
+    pub fn get_prefix(&self, idx: usize, len: usize) -> Option<&[u32]> {
+        let end = idx + len;
+        self.buffer.get(idx..end)
+    }
+}
+
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Branch<NR> {
     pub left: NR,
     pub right: NR,
     pub mask: BranchMask,
-    /// The word at the `(bit_idx / 32) - 1`.
-    /// Common to both children.
-    /// Will be 0 if this node is the root.
-    pub prior_word: u32,
-    /// The the segment of the hash key from the parent branch to `prior_word`.
-    /// Will be empty if the parent_branch.mask.bit_idx / 32 ==  self.mask.bit_idx / 32.
-    pub prefix: Box<[u32]>,
+    pub prefix: Prefix,
 }
 
 impl<NR> fmt::Debug for Branch<NR> {
@@ -352,6 +401,7 @@ impl<NR> Branch<NR> {
     /// Hash a branch node with known child hashes.
     ///
     /// Caller must ensure that the hasher is reset before calling this function.
+    ///
     #[inline]
     pub fn hash_branch<H: PortableHasher<32>>(
         &self,
@@ -361,6 +411,7 @@ impl<NR> Branch<NR> {
     ) -> NodeHash {
         hasher.portable_update(left);
         hasher.portable_update(right);
+        // Security: it's important to hash the metadata to avoid a potential trie corruption attack.
         hasher.portable_update(self.mask.bit_idx.to_le_bytes());
         hasher.portable_update(self.mask.left_prefix.to_le_bytes());
         hasher.portable_update(self.prior_word.to_le_bytes());

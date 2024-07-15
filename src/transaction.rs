@@ -15,12 +15,14 @@ use crate::{
 };
 
 use self::nodes::{
-    Branch, KeyPosition, KeyPositionAdjacent, Leaf, Node, NodeRef, StoredLeafRef, TrieRoot,
+    Branch, KeyPosition, KeyPositionAdjacent, Leaf, Node, NodeRef, PrefixesBuffer, StoredLeafRef,
+    TrieRoot,
 };
 
 pub struct Transaction<S, V> {
     pub data_store: S,
     current_root: TrieRoot<NodeRef<V>>,
+    prefixes_buffer: PrefixesBuffer,
 }
 
 impl<Db: DatabaseSet<V>, V: Clone + PortableHash> Transaction<SnapshotBuilder<Db, V>, V> {
