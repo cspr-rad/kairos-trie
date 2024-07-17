@@ -1,5 +1,5 @@
 use alloc::boxed::Box;
-use core::{fmt, iter, mem};
+use core::{fmt, iter, mem, slice, usize};
 
 use crate::{hash::PortableHasher, stored, KeyHash, NodeHash, PortableHash, PortableUpdate};
 
@@ -74,20 +74,20 @@ pub enum Node<B, L> {
 /// When executing against a `SnapshotBuilder`, it's a reference to a `NodeHash`,
 /// which can in turn be used to retrieve the `Node`.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum NodeRef<V> {
-    ModBranch(Box<Branch<Self>>),
+pub enum NodeRef<'s, V> {
+    ModBranch(Box<Branch<'s, Self>>),
     ModLeaf(Box<Leaf<V>>),
     Stored(stored::Idx),
 }
 
-impl<V> NodeRef<V> {
+impl<V> NodeRef<'_, V> {
     #[inline(always)]
     pub fn temp_null_stored() -> Self {
         NodeRef::Stored(u32::MAX)
     }
 }
 
-impl<V> fmt::Debug for NodeRef<V> {
+impl<V> fmt::Debug for NodeRef<'_, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ModBranch(b) => f.debug_tuple("ModBranch").field(b).finish(),
@@ -97,7 +97,7 @@ impl<V> fmt::Debug for NodeRef<V> {
     }
 }
 
-impl<V> From<Box<Branch<NodeRef<V>>>> for NodeRef<V> {
+impl<'s, V> From<Box<Branch<'s, NodeRef<'s, V>>>> for NodeRef<'s, V> {
     #[inline]
     fn from(branch: Box<Branch<NodeRef<V>>>) -> Self {
         NodeRef::ModBranch(branch)
@@ -263,27 +263,87 @@ mod tests {
     }
 }
 
+pub struct PrefixBufferRef {
+    /// This value will be 0 if the branch occurs in the first word of the hash key.
+    /// The value is the prior word if the branches parent's word index no more than 1 less.
+    /// If the parent's word index is more than 1 word prior,
+    /// we must store the multiword prefix outside of the branch, so the value is the index of the prefix.
+    /// The length of the prefix is the difference between the parent's word index and the branch's word index.
+    prior_word_or_prefix_idx: u32,
+}
+
+impl PrefixBufferRef {
+    pub fn get_prefix<'s, 'txn: 's>(
+        &'s self,
+        prefixies: &'txn PrefixesBuffer,
+        word_idx: usize,
+        parent_word_idx: usize,
+    ) -> Option<&'s [u32]> {
+        if word_idx - parent_word_idx <= 1 {
+            if cfg!(debug_assertions) && word_idx == 0 {
+                debug_assert_eq!(self.prior_word_or_prefix_idx, 0);
+            }
+
+            Some(slice::from_ref(&self.prior_word_or_prefix_idx))
+        } else {
+            let prefix_len = word_idx - parent_word_idx;
+            debug_assert!(prefix_len > 1);
+            prefixies.get_prefix(
+                self.prior_word_or_prefix_idx as usize,
+                word_idx - parent_word_idx,
+            )
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PrefixesBuffer {
+    buffer: Vec<u32>,
+}
+
+impl PrefixesBuffer {
+    pub fn new() -> Self {
+        Self { buffer: Vec::new() }
+    }
+
+    pub fn push_prefix(&mut self, prefix: &[u32]) -> u32 {
+        let idx = self.buffer.len() as u32;
+        self.buffer.extend_from_slice(prefix);
+        idx
+    }
+
+    pub fn get_prefix(&self, idx: usize, len: usize) -> Option<&[u32]> {
+        let end = idx + len;
+        self.buffer.get(idx..end)
+    }
+}
+
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PrefixCow<'a> {
+    StartOfKey,
+    PriorWord(u32),
+    Segment(&'a [u32]),
+    SegmentOwned(Box<[u32]>),
+}
+
+/// A branch node in the trie.
+/// `NR` is the type of the node references.
+/// `PR` is the type of reference to the prefix.
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Branch<NR> {
+pub struct Branch<'s, NR> {
     pub left: NR,
     pub right: NR,
     pub mask: BranchMask,
-    /// The word at the `(bit_idx / 32) - 1`.
-    /// Common to both children.
-    /// Will be 0 if this node is the root.
-    pub prior_word: u32,
-    /// The the segment of the hash key from the parent branch to `prior_word`.
-    /// Will be empty if the parent_branch.mask.bit_idx / 32 ==  self.mask.bit_idx / 32.
-    pub prefix: Box<[u32]>,
+    pub prefix: PrefixCow<'s>,
 }
 
-impl<NR> fmt::Debug for Branch<NR> {
+impl<NR> fmt::Debug for Branch<'_, NR> {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Branch")
             .field("mask", &self.mask)
-            .field("prior_word", &self.prior_word)
             .field("prefix", &self.prefix)
             .finish()
     }
@@ -310,7 +370,7 @@ pub enum KeyPositionAdjacent {
     PrefixVec(usize),
 }
 
-impl<NR> Branch<NR> {
+impl<NR> Branch<NR, PrefixCow<'a>> {
     /// Returns the position of the key relative to the branch.
     #[inline(always)]
     pub fn key_position(&self, key_hash: &KeyHash) -> KeyPosition {
@@ -352,6 +412,7 @@ impl<NR> Branch<NR> {
     /// Hash a branch node with known child hashes.
     ///
     /// Caller must ensure that the hasher is reset before calling this function.
+    ///
     #[inline]
     pub fn hash_branch<H: PortableHasher<32>>(
         &self,
@@ -361,6 +422,7 @@ impl<NR> Branch<NR> {
     ) -> NodeHash {
         hasher.portable_update(left);
         hasher.portable_update(right);
+        // Security: it's important to hash the metadata to avoid a potential trie corruption attack.
         hasher.portable_update(self.mask.bit_idx.to_le_bytes());
         hasher.portable_update(self.mask.left_prefix.to_le_bytes());
         hasher.portable_update(self.prior_word.to_le_bytes());
@@ -373,19 +435,7 @@ impl<NR> Branch<NR> {
     }
 }
 
-impl<V> Branch<NodeRef<V>> {
-    pub(crate) fn from_stored(branch: &Branch<stored::Idx>) -> Branch<NodeRef<V>> {
-        Branch {
-            left: NodeRef::Stored(branch.left),
-            right: NodeRef::Stored(branch.right),
-            mask: branch.mask,
-            prior_word: branch.prior_word,
-            // TODO remove the clone
-            // Maybe use a AsRef<[u32]> instead of Box<[u32]>
-            prefix: branch.prefix.clone(),
-        }
-    }
-
+impl<V, PR> Branch<NodeRef<V>, PR> {
     /// A wrapper around `new_at_branch_ret` which returns nothing.
     /// This exists to aid compiler inlining.
     ///
@@ -540,17 +590,19 @@ impl<V> Branch<NodeRef<V>> {
 
         debug_assert!(new_leaf.key_hash.0[..word_idx] == old_leaf.as_ref().key_hash.0[..word_idx]);
 
-        let prior_word_idx = word_idx.saturating_sub(1);
-        let prefix = new_leaf.key_hash.0[prefix_start_idx..prior_word_idx].into();
-        let prior_word = if word_idx == 0 {
-            0
-        } else {
+        let prefix = if word_idx == 0 {
+            PrefixCow::StartOfKey
+        } else if prefix_start_idx == word_idx {
+            let prior_word_idx = word_idx - 1;
             debug_assert_eq!(
                 new_leaf.key_hash.0[prior_word_idx],
                 old_leaf.as_ref().key_hash.0[prior_word_idx]
             );
-
-            new_leaf.key_hash.0[prior_word_idx]
+            PrefixCow::PriorWord(new_leaf.key_hash.0[prior_word_idx])
+        } else if prefix_start_idx == word_idx - 1 {
+            PrefixCow::PriorWord(new_leaf.key_hash.0[word_idx - 1])
+        } else {
+            PrefixCow::Segment(&new_leaf.key_hash.0[prefix_start_idx..word_idx])
         };
 
         let mask = BranchMask::new(word_idx as u32, a, b);
@@ -577,7 +629,6 @@ impl<V> Branch<NodeRef<V>> {
                 left,
                 right,
                 mask,
-                prior_word,
                 prefix,
             }),
             // TODO use an enum
