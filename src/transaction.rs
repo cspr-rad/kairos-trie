@@ -22,7 +22,6 @@ use self::nodes::{
 pub struct Transaction<S, V> {
     pub data_store: S,
     current_root: TrieRoot<NodeRef<V>>,
-    prefixes_buffer: PrefixesBuffer,
 }
 
 impl<Db: DatabaseSet<V>, V: Clone + PortableHash> Transaction<SnapshotBuilder<Db, V>, V> {
@@ -44,7 +43,6 @@ impl<Db: DatabaseSet<V>, V: Clone + PortableHash> Transaction<SnapshotBuilder<Db
                     left,
                     right,
                     mask: branch.mask,
-                    prior_word: branch.prior_word,
                     prefix: branch.prefix.clone(),
                 };
 
@@ -397,6 +395,7 @@ impl<S: Store<V>, V> Transaction<S, V> {
                                 mask: new_branch.mask,
                                 prior_word: new_branch.prior_word,
                                 prefix: new_branch.prefix.clone(),
+                                prefix,
                             }));
 
                             continue;
@@ -549,6 +548,7 @@ impl<Db, V: PortableHash + Clone> Transaction<SnapshotBuilder<Db, V>, V> {
         Transaction {
             current_root: builder.trie_root(),
             data_store: builder,
+            prefixes_buffer: builder.prefixes_buffer,
         }
     }
 }
@@ -582,6 +582,7 @@ impl<V: PortableHash + Clone> Transaction<Snapshot<V>, V> {
         Ok(Transaction {
             current_root: snapshot.trie_root()?,
             data_store: snapshot,
+            prefixes_buffer: snapshot.prefixes_buffer,
         })
     }
 }

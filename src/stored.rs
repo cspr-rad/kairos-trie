@@ -21,7 +21,10 @@ pub trait Store<V> {
         hash_idx: Idx,
     ) -> Result<NodeHash, Self::Error>;
 
-    fn get_node(&self, hash_idx: Idx) -> Result<Node<&Branch<Idx>, &Leaf<V>>, Self::Error>;
+    fn get_node<'s>(
+        &'s self,
+        hash_idx: Idx,
+    ) -> Result<Node<&'s Branch<'s, Idx>, &'s Leaf<V>>, Self::Error>;
 }
 
 impl<V, S: Store<V>> Store<V> for &S {

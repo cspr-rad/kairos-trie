@@ -5,7 +5,7 @@ use bumpalo::Bump;
 use ouroboros::self_referencing;
 
 use crate::{
-    transaction::nodes::{NodeRef, TrieRoot},
+    transaction::nodes::{NodeRef, PrefixesBuffer, TrieRoot},
     Branch, Leaf, PortableHash, PortableHasher, TrieError,
 };
 
@@ -20,12 +20,14 @@ type Result<T, E = TrieError> = core::result::Result<T, E>;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Snapshot<V> {
     /// The last branch is the root of the trie if it exists.
-    branches: Box<[Branch<Idx>]>,
+    branches: Box<[Branch<'static, Idx>]>,
     /// A Snapshot containing only
     leaves: Box<[Leaf<V>]>,
 
     // we only store the hashes of the nodes that have not been visited.
     unvisited_nodes: Box<[NodeHash]>,
+
+    prefixies_buffer: PrefixesBuffer,
 }
 
 impl<V: PortableHash> Snapshot<V> {
