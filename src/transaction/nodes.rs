@@ -75,8 +75,8 @@ pub enum Node<B, L> {
 /// which can in turn be used to retrieve the `Node`.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum NodeRef<V> {
-    ModBranch(Box<Branch<Self>>),
-    ModLeaf(Box<Leaf<V>>),
+    ModBranch(Box<Branch<Self>>, Option<stored::Idx>),
+    ModLeaf(Box<Leaf<V>>, Option<stored::Idx>),
     Stored(stored::Idx),
 }
 
@@ -85,13 +85,36 @@ impl<V> NodeRef<V> {
     pub fn temp_null_stored() -> Self {
         NodeRef::Stored(u32::MAX)
     }
+    
+    #[inline]
+    pub fn stored_idx(&self) -> Option<stored::Idx> {
+        match self {
+            Self::ModBranch(_, idx) => *idx,
+            Self::ModLeaf(_, idx) => *idx,
+            Self::Stored(idx) => Some(*idx),
+        }
+    }
 }
 
 impl<V> fmt::Debug for NodeRef<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ModBranch(b) => f.debug_tuple("ModBranch").field(b).finish(),
-            Self::ModLeaf(l) => f.debug_tuple("ModLeaf").field(l).finish(),
+            Self::ModBranch(b, idx) => {
+                let mut debug = f.debug_tuple("ModBranch");
+                debug.field(b);
+                if let Some(idx) = idx {
+                    debug.field(idx);
+                }
+                debug.finish()
+            },
+            Self::ModLeaf(l, idx) => {
+                let mut debug = f.debug_tuple("ModLeaf");
+                debug.field(l);
+                if let Some(idx) = idx {
+                    debug.field(idx);
+                }
+                debug.finish()
+            },
             Self::Stored(idx) => f.debug_tuple("Stored").field(idx).finish(),
         }
     }
@@ -100,14 +123,14 @@ impl<V> fmt::Debug for NodeRef<V> {
 impl<V> From<Box<Branch<NodeRef<V>>>> for NodeRef<V> {
     #[inline]
     fn from(branch: Box<Branch<NodeRef<V>>>) -> Self {
-        NodeRef::ModBranch(branch)
+        NodeRef::ModBranch(branch, None)
     }
 }
 
 impl<V> From<Box<Leaf<V>>> for NodeRef<V> {
     #[inline]
     fn from(leaf: Box<Leaf<V>>) -> Self {
-        NodeRef::ModLeaf(leaf)
+        NodeRef::ModLeaf(leaf, None)
     }
 }
 
@@ -499,22 +522,22 @@ impl<V> Branch<NodeRef<V>> {
         let r = if mask.is_left_descendant(leaf_word) {
             debug_assert!(!mask.is_right_descendant(leaf_word));
 
-            self.left = NodeRef::ModLeaf(leaf);
-            self.right = NodeRef::ModBranch(old_branch);
+            self.left = NodeRef::ModLeaf(leaf, None);
+            self.right = NodeRef::ModBranch(old_branch, None);
 
             &mut self.left
         } else {
             debug_assert!(mask.is_right_descendant(leaf_word));
             debug_assert!(!mask.is_left_descendant(leaf_word));
 
-            self.left = NodeRef::ModBranch(old_branch);
-            self.right = NodeRef::ModLeaf(leaf);
+            self.left = NodeRef::ModBranch(old_branch, None);
+            self.right = NodeRef::ModLeaf(leaf, None);
 
             &mut self.right
         };
 
         match r {
-            NodeRef::ModLeaf(leaf) => leaf,
+            NodeRef::ModLeaf(leaf, _) => leaf,
             _ => unreachable!(),
         }
     }

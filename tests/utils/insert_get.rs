@@ -5,13 +5,13 @@ use std::collections::HashMap;
 use kairos_trie::{
     stored::{
         merkle::{Snapshot, SnapshotBuilder, VerifiedSnapshot},
-        DatabaseSet,
+        DatabaseSet, DatabaseRemove,
     },
     DigestHasher, KeyHash, NodeHash, Transaction, TrieRoot,
 };
 use sha2::Sha256;
 
-pub fn run_against_snapshot_builder<Db: 'static + DatabaseSet<[u8; 8]>>(
+pub fn run_against_snapshot_builder<Db: 'static + DatabaseSet<[u8; 8]> + DatabaseRemove>(
     new: &HashMap<KeyHash, u64>,
     old_root_hash: TrieRoot<NodeHash>,
     db: Db,

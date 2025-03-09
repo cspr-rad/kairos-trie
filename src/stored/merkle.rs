@@ -194,6 +194,14 @@ impl<S: Store + AsRef<Snapshot<S::Value>>> Store for VerifiedSnapshot<S> {
             .into())
         }
     }
+
+    #[inline]
+    fn get_node_hash(
+        &self,
+        hash_idx: Idx,
+    ) -> Result<NodeHash, Self::Error> {
+        Ok(NodeHash::new([0; 32])) // TODO: implement
+    }
 }
 
 /// A snapshot of the merkle trie
@@ -356,6 +364,13 @@ impl<V: Clone + PortableHash> Store for Snapshot<V> {
             .into())
         }
     }
+    #[inline]
+    fn get_node_hash(
+        &self,
+        hash_idx: Idx,
+    ) -> Result<NodeHash, Self::Error> {
+        Ok(NodeHash::new([0; 32])) // TODO: implement
+    }
 }
 
 type NodeHashMaybeNode<'a, V> = (&'a NodeHash, Option<Node<&'a Branch<Idx>, &'a Leaf<V>>>);
@@ -456,6 +471,28 @@ impl<Db: DatabaseGet<V>, V: Clone + PortableHash> Store for SnapshotBuilder<Db, 
 
             nodes[hash_idx].1 = Some(node);
             Ok(node)
+        })
+    }
+
+    #[inline]
+    fn get_node_hash(
+        &self,
+        hash_idx: Idx,
+    ) -> Result<NodeHash, Self::Error> {
+        self.inner.with_nodes(|nodes| {
+            let nodes = nodes.borrow();
+            nodes
+                .get(hash_idx as usize)
+                .map(|(hash, _)| **hash)
+                .ok_or_else(|| {
+                    format!(
+                        "Invalid snapshot: no node at index {}\n\
+                        SnapshotBuilder has {} nodes",
+                        hash_idx,
+                        nodes.len()
+                    )
+                    .into()
+                })
         })
     }
 }

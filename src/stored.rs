@@ -26,6 +26,11 @@ pub trait Store {
         &self,
         hash_idx: Idx,
     ) -> Result<Node<&Branch<Idx>, &Leaf<Self::Value>>, Self::Error>;
+
+    fn get_node_hash(
+        &self,
+        hash_idx: Idx,
+    ) -> Result<NodeHash, Self::Error>;
 }
 
 impl<S: Store> Store for &S {
@@ -49,6 +54,14 @@ impl<S: Store> Store for &S {
     ) -> Result<Node<&Branch<Idx>, &Leaf<Self::Value>>, Self::Error> {
         (**self).get_node(hash_idx)
     }
+
+    #[inline(always)]
+    fn get_node_hash(
+        &self,
+        hash_idx: Idx,
+    ) -> Result<NodeHash, Self::Error> {
+        (**self).get_node_hash(hash_idx)
+    }
 }
 
 impl<S: Store> Store for Rc<S> {
@@ -71,6 +84,14 @@ impl<S: Store> Store for Rc<S> {
     ) -> Result<Node<&Branch<Idx>, &Leaf<Self::Value>>, Self::Error> {
         (**self).get_node(hash_idx)
     }
+
+    #[inline(always)]
+    fn get_node_hash(
+        &self,
+        hash_idx: Idx,
+    ) -> Result<NodeHash, Self::Error> {
+        (**self).get_node_hash(hash_idx)
+    }
 }
 
 impl<S: Store> Store for Arc<S> {
@@ -92,6 +113,14 @@ impl<S: Store> Store for Arc<S> {
         hash_idx: Idx,
     ) -> Result<Node<&Branch<Idx>, &Leaf<Self::Value>>, Self::Error> {
         (**self).get_node(hash_idx)
+    }
+
+    #[inline(always)]
+    fn get_node_hash(
+        &self,
+        hash_idx: Idx,
+    ) -> Result<NodeHash, Self::Error> {
+        (**self).get_node_hash(hash_idx)
     }
 }
 
@@ -174,5 +203,41 @@ impl<V, D: DatabaseSet<V>> DatabaseSet<V> for Arc<D> {
         node: Node<Branch<NodeHash>, Leaf<V>>,
     ) -> Result<(), Self::GetError> {
         (**self).set(hash, node)
+    }
+}
+
+/// Trait for databases that support removing nodes
+pub trait DatabaseRemove {
+    /// Error type returned when a remove operation fails
+    type RemoveError: Display;
+
+    /// Remove a node from the database
+    fn remove(&self, key: &NodeHash) -> Result<(), Self::RemoveError>;
+}
+
+impl<D: DatabaseRemove> DatabaseRemove for &D {
+    type RemoveError = D::RemoveError;
+
+    #[inline]
+    fn remove(&self, key: &NodeHash) -> Result<(), Self::RemoveError> {
+        (**self).remove(key)
+    }
+}
+
+impl<D: DatabaseRemove> DatabaseRemove for Rc<D> {
+    type RemoveError = D::RemoveError;
+
+    #[inline]
+    fn remove(&self, key: &NodeHash) -> Result<(), Self::RemoveError> {
+        (**self).remove(key)
+    }
+}
+
+impl<D: DatabaseRemove> DatabaseRemove for Arc<D> {
+    type RemoveError = D::RemoveError;
+
+    #[inline]
+    fn remove(&self, key: &NodeHash) -> Result<(), Self::RemoveError> {
+        (**self).remove(key)
     }
 }

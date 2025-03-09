@@ -2,7 +2,7 @@ use alloc::{collections::BTreeMap, format, string::String};
 use core::cell::RefCell;
 
 use crate::{
-    stored::{DatabaseGet, DatabaseSet, Node, NodeHash},
+    stored::{DatabaseGet, DatabaseSet, DatabaseRemove, Node, NodeHash},
     Branch, Leaf,
 };
 
@@ -43,6 +43,15 @@ impl<V: Clone> DatabaseSet<V> for MemoryDb<V> {
         node: Node<Branch<NodeHash>, Leaf<V>>,
     ) -> Result<(), Self::SetError> {
         self.leaves.borrow_mut().insert(hash, node);
+        Ok(())
+    }
+}
+
+impl<V: Clone> DatabaseRemove for MemoryDb<V> {
+    type RemoveError = String;
+
+    fn remove(&self, key: &NodeHash) -> Result<(), Self::RemoveError> {
+        self.leaves.borrow_mut().remove(key);
         Ok(())
     }
 }
