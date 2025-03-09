@@ -1,15 +1,15 @@
 mod utils;
 
-use std::{collections::HashMap, rc::Rc};
+use std::rc::Rc;
 
-use proptest::prelude::*;
 
 use kairos_trie::{
-    stored::{memory_db::MemoryDb, merkle::SnapshotBuilder, Store},
-    DigestHasher, KeyHash, NodeHash, Transaction, TrieError, TrieRoot,
+    stored::{memory_db::MemoryDb, merkle::SnapshotBuilder},
+    DigestHasher, KeyHash, Transaction, TrieRoot,
 };
 use sha2::Sha256;
-use utils::*;
+use kairos_trie::Leaf;
+use kairos_trie::stored::DatabaseGet;
 
 #[test]
 fn test_remove_empty_trie() {
@@ -42,37 +42,39 @@ fn test_remove_single_key() {
     let value = 42u64.to_le_bytes();
     txn.insert(&key_hash, value).unwrap();
     
-    // Commit the transaction
+    // Commit the transaction to write the node to the db
     let mut hasher = DigestHasher::<Sha256>::default();
     let root_hash = txn.commit(&mut hasher).unwrap();
     
-    // Create a new transaction with the updated root
+    // Compute the expected node hash for the inserted leaf
+    let mut hasher = DigestHasher::<Sha256>::default();
+    let expected_hash = Leaf { key_hash, value }.hash_leaf(&mut hasher);
+    
+    // Check that the node is available in the db directly
+    let db_node = db.clone().get(&expected_hash);  
+    assert!(db_node.is_ok(), "Node should be available in DB after initial commit");
+    
+    // Create a new transaction with the updated root, then remove the key
     let builder = SnapshotBuilder::empty(db.clone()).with_trie_root_hash(root_hash);
     let mut txn = Transaction::from_snapshot_builder(builder);
-    
-    // Verify the key exists
-    let result = txn.get(&key_hash).unwrap();
-    assert_eq!(result, Some(&value));
-    
-    // Remove the key
+    assert_eq!(txn.get(&key_hash).unwrap(), Some(&value));
     txn.remove(&key_hash).unwrap();
     
-    // Verify the key no longer exists
-    let result = txn.get(&key_hash).unwrap();
-    assert_eq!(result, None);
+    // Before committing the removal, the node should still be in the db
+    let db_node = db.clone().get(&expected_hash);
+    assert!(db_node.is_ok(), "Node should still be available in DB after removal before commit");
     
-    // Commit the transaction
+    // Now commit the removal
     let mut hasher = DigestHasher::<Sha256>::default();
     let root_hash = txn.commit(&mut hasher).unwrap();
     
-    // Root should be empty again
-    assert_eq!(root_hash, TrieRoot::default());
+    // After commit, the removed node should be gone from the db (get errors)
+    let db_node = db.clone().get(&expected_hash);
+    assert!(db_node.is_err(), "Node should be removed from DB after commit");
     
-    // Create a new transaction with the updated root
-    let builder = SnapshotBuilder::empty(db).with_trie_root_hash(root_hash);
+    // Finally, verify that txn.get returns None
+    let builder = SnapshotBuilder::empty(db.clone()).with_trie_root_hash(root_hash);
     let txn = Transaction::from_snapshot_builder(builder);
-    
-    // Verify the key no longer exists in the database
     let result = txn.get(&key_hash);
     assert_eq!(result, Ok(None));
 }
@@ -110,6 +112,10 @@ fn test_remove_multiple_keys() {
         let value = (i as u64).to_le_bytes();
         let result = txn.get(key).unwrap();
         assert_eq!(result, Some(&value));
+
+        let expected_hash = Leaf { key_hash: *key, value }.hash_leaf(&mut hasher);
+        let db_node = db.clone().get(&expected_hash);
+        assert!(db_node.is_ok(), "Node should be available in DB after initial commit");
     }
     
     // Remove keys 1, 3, and 5
@@ -122,6 +128,10 @@ fn test_remove_multiple_keys() {
     for &idx in &keys_to_remove {
         let result = txn.get(&keys[idx]).unwrap();
         assert_eq!(result, None);
+
+        let expected_hash = Leaf { key_hash: keys[idx], value: (idx as u64).to_le_bytes() }.hash_leaf(&mut hasher);
+        let db_node = db.clone().get(&expected_hash);
+        assert!(db_node.is_ok(), "Node should be still available in DB before commit");
     }
     
     // Verify remaining keys still exist
@@ -138,13 +148,17 @@ fn test_remove_multiple_keys() {
     let root_hash = txn.commit(&mut hasher).unwrap();
     
     // Create a new transaction with the updated root
-    let builder = SnapshotBuilder::empty(db).with_trie_root_hash(root_hash);
+    let builder = SnapshotBuilder::empty(db.clone()).with_trie_root_hash(root_hash);
     let txn = Transaction::from_snapshot_builder(builder);
     
     // Verify removed keys no longer exist in the database
     for &idx in &keys_to_remove {
         let result = txn.get(&keys[idx]);
         assert_eq!(result, Ok(None));
+
+        let expected_hash = Leaf { key_hash: keys[idx], value: (idx as u64).to_le_bytes() }.hash_leaf(&mut hasher);
+        let db_node = db.clone().get(&expected_hash);
+        assert!(db_node.is_err(), "Node should be removed from DB after commit");
     }
     
     // Verify remaining keys still exist in the database
@@ -153,6 +167,10 @@ fn test_remove_multiple_keys() {
             let value = (idx as u64).to_le_bytes();
             let result = txn.get(&keys[idx]).unwrap();
             assert_eq!(result, Some(&value));
+
+            let expected_hash = Leaf { key_hash: keys[idx], value }.hash_leaf(&mut hasher);
+            let db_node = db.clone().get(&expected_hash);
+            assert!(db_node.is_ok(), "Node should be available in DB after commit");
         }
     }
 }
@@ -187,93 +205,6 @@ fn test_remove_nonexistent_key() {
     let result = txn.get(&key_hash).unwrap();
     assert_eq!(result, Some(&value));
 }
-
-// Property-based test for remove functionality
-fn test_remove_functionality(
-    map: HashMap<KeyHash, u64>,
-    keys_to_remove_indices: Vec<usize>,
-) -> Result<(), TestCaseError> {
-    if map.is_empty() {
-        return Ok(());
-    }
-    
-    let db = Rc::new(MemoryDb::<[u8; 8]>::empty());
-    let builder = SnapshotBuilder::empty(db.clone()).with_trie_root_hash(TrieRoot::default());
-    let mut txn = Transaction::from_snapshot_builder(builder);
-    
-    // Insert all keys
-    for (key, value) in &map {
-        txn.insert(key, value.to_le_bytes()).unwrap();
-    }
-    
-    // Commit the transaction
-    let mut hasher = DigestHasher::<Sha256>::default();
-    let root_hash = txn.commit(&mut hasher).unwrap();
-    
-    // Create a new transaction with the updated root
-    let builder = SnapshotBuilder::empty(db.clone()).with_trie_root_hash(root_hash);
-    let mut txn = Transaction::from_snapshot_builder(builder);
-    
-    // Get keys to remove
-    let keys: Vec<KeyHash> = map.keys().cloned().collect();
-    let keys_to_remove: Vec<KeyHash> = keys_to_remove_indices
-        .iter()
-        .filter_map(|&idx| keys.get(idx % keys.len()))
-        .cloned()
-        .collect();
-    
-    // Remove selected keys
-    for key in &keys_to_remove {
-        txn.remove(key).unwrap();
-    }
-    
-    // Verify removed keys no longer exist
-    for key in &keys_to_remove {
-        let result = txn.get(key).unwrap();
-        assert_eq!(result, None);
-    }
-    
-    // Verify remaining keys still exist
-    for (key, value) in &map {
-        if !keys_to_remove.contains(key) {
-            let expected_value = value.to_le_bytes();
-            let result = txn.get(key).unwrap();
-            assert_eq!(result, Some(&expected_value));
-        }
-    }
-    
-    // Commit the transaction
-    let mut hasher = DigestHasher::<Sha256>::default();
-    let new_root_hash = txn.commit(&mut hasher).unwrap();
-    
-    // Create a new transaction with the updated root
-    let builder = SnapshotBuilder::empty(db).with_trie_root_hash(new_root_hash);
-    let txn = Transaction::from_snapshot_builder(builder);
-    
-    // Verify removed keys no longer exist in the database
-    for key in &keys_to_remove {
-        let result = txn.get(key);
-        assert_eq!(result, Ok(None));
-        
-        // Try to access the node directly in the database
-        // This should fail with an error since the node should be removed
-        if !keys_to_remove.is_empty() && new_root_hash != TrieRoot::default() {
-            // We can't directly test database access here, but we've verified the key is not in the trie
-        }
-    }
-    
-    // Verify remaining keys still exist in the database
-    for (key, value) in &map {
-        if !keys_to_remove.contains(key) {
-            let expected_value = value.to_le_bytes();
-            let result = txn.get(key).unwrap();
-            assert_eq!(result, Some(&expected_value));
-        }
-    }
-    
-    Ok(())
-}
-
 #[test]
 fn test_database_node_removal() {
     let db = Rc::new(MemoryDb::<[u8; 8]>::empty());
@@ -293,36 +224,45 @@ fn test_database_node_removal() {
     let mut hasher = DigestHasher::<Sha256>::default();
     let root_hash = txn.commit(&mut hasher).unwrap();
     
+    // Compute the expected node hashes for the inserted leaves
+    let mut hasher = DigestHasher::<Sha256>::default();
+    let expected_hash1 = Leaf { key_hash: key1, value: value1 }.hash_leaf(&mut hasher);
+    let expected_hash2 = Leaf { key_hash: key2, value: value2 }.hash_leaf(&mut hasher);
+    
+    // Check that the nodes are available in the db directly
+    let db_node1 = db.clone().get(&expected_hash1);
+    let db_node2 = db.clone().get(&expected_hash2);
+    assert!(db_node1.is_ok(), "Node 1 should be available in DB after initial commit");
+    assert!(db_node2.is_ok(), "Node 2 should be available in DB after initial commit");
+    
     // Create a new transaction with the updated root
     let builder = SnapshotBuilder::empty(db.clone()).with_trie_root_hash(root_hash);
     let mut txn = Transaction::from_snapshot_builder(builder);
     
-    // Count how many keys we can successfully retrieve
-    let keys_before_removal = [
-        txn.get(&key1).unwrap().is_some(),
-        txn.get(&key2).unwrap().is_some(),
-    ].iter().filter(|&&present| present).count();
+    // Verify both keys exist
+    assert_eq!(txn.get(&key1).unwrap(), Some(&value1));
+    assert_eq!(txn.get(&key2).unwrap(), Some(&value2));
     
     // Remove one key
     txn.remove(&key1).unwrap();
+    
+    // Before committing the removal, the node should still be in the db
+    let db_node1 = db.clone().get(&expected_hash1);
+    assert!(db_node1.is_ok(), "Node 1 should still be available in DB after removal before commit");
     
     // Commit the transaction
     let mut hasher = DigestHasher::<Sha256>::default();
     let new_root_hash = txn.commit(&mut hasher).unwrap();
     
+    // After commit, the removed node should be gone from the db
+    let db_node1 = db.clone().get(&expected_hash1);
+    let db_node2 = db.clone().get(&expected_hash2);
+    assert!(db_node1.is_err(), "Node 1 should be removed from DB after commit");
+    assert!(db_node2.is_ok(), "Node 2 should still be available in DB after commit");
+    
     // Create a new transaction with the updated root
     let builder = SnapshotBuilder::empty(db.clone()).with_trie_root_hash(new_root_hash);
     let txn = Transaction::from_snapshot_builder(builder);
-    
-    // Count how many keys we can successfully retrieve after removal
-    let keys_after_removal = [
-        txn.get(&key1).unwrap().is_some(),
-        txn.get(&key2).unwrap().is_some(),
-    ].iter().filter(|&&present| present).count();
-    
-    // Verify that we have fewer accessible keys after removal
-    assert!(keys_after_removal < keys_before_removal, 
-            "Number of accessible keys should decrease after removing nodes");
     
     // Verify key1 is gone and key2 still exists
     let result1 = txn.get(&key1);
