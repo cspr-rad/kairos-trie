@@ -346,12 +346,12 @@ impl<Db: 'static + DatabaseGet<V>, V: Clone + PortableHash> Transaction<Snapshot
     ) -> Result<Option<Cow<'root, V>>, TrieError> {
         loop {
             match node_ref {
-                NodeRef::ModBranch(branch, idx) => match branch.key_position(key_hash) {
+                NodeRef::ModBranch(branch, _idx) => match branch.key_position(key_hash) {
                     KeyPosition::Left => node_ref = &branch.left,
                     KeyPosition::Right => node_ref = &branch.right,
                     KeyPosition::Adjacent(_) => return Ok(None),
                 },
-                NodeRef::ModLeaf(leaf, idx) => {
+                NodeRef::ModLeaf(leaf, _idx) => {
                     if leaf.key_hash == *key_hash {
                         return Ok(Some(Cow::Borrowed(&leaf.value)));
                     } else {

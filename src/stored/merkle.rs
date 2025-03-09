@@ -198,7 +198,7 @@ impl<S: Store + AsRef<Snapshot<S::Value>>> Store for VerifiedSnapshot<S> {
     #[inline]
     fn get_node_hash(
         &self,
-        hash_idx: Idx,
+        _hash_idx: Idx,
     ) -> Result<NodeHash, Self::Error> {
         Ok(NodeHash::new([0; 32])) // TODO: implement
     }
@@ -367,7 +367,7 @@ impl<V: Clone + PortableHash> Store for Snapshot<V> {
     #[inline]
     fn get_node_hash(
         &self,
-        hash_idx: Idx,
+        _hash_idx: Idx,
     ) -> Result<NodeHash, Self::Error> {
         Ok(NodeHash::new([0; 32])) // TODO: implement
     }
