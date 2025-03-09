@@ -166,7 +166,6 @@ impl<S: Store> Transaction<S> {
             }
             NodeRef::ModLeaf(leaf, _) => {
                 let hash = leaf.hash_leaf(hasher);
-
                 on_modified_leaf(&hash, leaf)?;
                 Ok(hash)
             }
@@ -484,7 +483,7 @@ impl<S: Store> Transaction<S> {
                     key_hash: *key_hash,
                     value,
                 }),
-                None));
+                None));  // Correctly setting idx to None for new leaf
                 Ok(())
             }
             TrieRoot::Node(node_ref) => {
@@ -502,7 +501,7 @@ impl<S: Store> Transaction<S> {
     ) -> Result<(), TrieError> {
         loop {
             match node_ref {
-                NodeRef::ModBranch(branch, _) => match branch.key_position(key_hash) {
+                NodeRef::ModBranch(branch, stored_idx) => match branch.key_position(key_hash) {
                     KeyPosition::Left => {
                         node_ref = &mut branch.left;
                         continue;
@@ -518,6 +517,7 @@ impl<S: Store> Transaction<S> {
                                 key_hash: *key_hash,
                                 value,
                             }),
+                            *stored_idx,
                         );
 
                         return Ok(());
@@ -529,8 +529,8 @@ impl<S: Store> Transaction<S> {
 
                         return Ok(());
                     } else {
-                        let old_leaf = mem::replace(node_ref, NodeRef::temp_null_stored());
-                        let NodeRef::ModLeaf(old_leaf, _) = old_leaf else {
+                        let old_leaf: NodeRef<<S as Store>::Value> = mem::replace(node_ref, NodeRef::temp_null_stored());
+                        let NodeRef::ModLeaf(_, _) = old_leaf else {
                             unreachable!("We just matched a ModLeaf");
                         };
                         let new_leaf = Box::new(Leaf {
@@ -637,7 +637,7 @@ impl<S: Store> Transaction<S> {
                                     // Convert the stored branch to a modified branch
                                     *node_ref = NodeRef::ModBranch(
                                         Box::new(Branch::from_stored(branch)),
-                                        Some(*idx) // Preserve the original idx
+                                        Some(*idx)  // Correctly preserving idx
                                     );
                                 }
                                 Node::Leaf(leaf) => {
@@ -645,7 +645,7 @@ impl<S: Store> Transaction<S> {
                                         // Convert the stored leaf to a modified leaf
                                         *node_ref = NodeRef::ModLeaf(
                                             Box::new(leaf.clone()),
-                                            Some(*idx) // Preserve the original idx
+                                            Some(*idx)  // Correctly preserving idx
                                         );
                                     } else {
                                         // This is a logical null
@@ -831,6 +831,7 @@ impl<S: Store + AsRef<Snapshot<S::Value>>> From<VerifiedSnapshot<S>>
     }
 }
 
+// TODO: FIX THE ENTRY API TO WORK WITH REMOVE
 pub enum Entry<'a, V> {
     /// A Leaf
     Occupied(OccupiedEntry<'a, V>),
@@ -997,17 +998,17 @@ impl<'a, V> VacantEntry<'a, V> {
             key_hash,
             key_position,
         } = self;
-        if let NodeRef::ModBranch(branch, _) = parent {
+        if let NodeRef::ModBranch(branch, stored_idx) = parent {
             let leaf =
-                branch.new_adjacent_leaf_ret(key_position, Box::new(Leaf { key_hash, value }));
+                branch.new_adjacent_leaf_ret(key_position, Box::new(Leaf { key_hash, value }), *stored_idx);
             return &mut leaf.value;
         };
 
         let owned_parent = mem::replace(parent, NodeRef::temp_null_stored());
         match owned_parent {
-            NodeRef::ModLeaf(old_leaf, _) => {
+            NodeRef::ModLeaf(_, _) => {
                 let (new_branch, new_leaf_is_right) =
-                    Branch::new_from_leafs(0, old_leaf, Box::new(Leaf { key_hash, value }));
+                    Branch::new_from_leafs(0, owned_parent, Box::new(Leaf { key_hash, value }));
 
                 *parent = NodeRef::ModBranch(new_branch, None);
 

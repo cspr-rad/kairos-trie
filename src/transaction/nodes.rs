@@ -418,8 +418,9 @@ impl<V> Branch<NodeRef<V>> {
         self: &mut Box<Self>,
         key_position: KeyPositionAdjacent,
         leaf: Box<Leaf<V>>,
+        parent_idx: Option<stored::Idx>,
     ) {
-        self.new_adjacent_leaf_ret(key_position, leaf);
+        self.new_adjacent_leaf_ret(key_position, leaf, parent_idx);
     }
 
     /// Store a new leaf adjacent to an existing branch.
@@ -431,6 +432,7 @@ impl<V> Branch<NodeRef<V>> {
         self: &'a mut Box<Self>,
         key_position: KeyPositionAdjacent,
         leaf: Box<Leaf<V>>,
+        parent_idx: Option<stored::Idx>,
     ) -> &'a mut Leaf<V> {
         let (mask, prior_word, prefix, leaf_word) = match key_position {
             KeyPositionAdjacent::PrefixOfWord(word_idx) => {
@@ -469,8 +471,6 @@ impl<V> Branch<NodeRef<V>> {
 
                 let mask = BranchMask::new(word_idx as u32, branch_word, leaf_word);
 
-                // If sub wraps around to the last word, the prior word is 0.
-                // This is a little optimization since we are already paying for a bounds check.
                 let prior_word_idx = word_idx.wrapping_sub(1);
                 let prior_word = leaf.key_hash.0.get(prior_word_idx).unwrap_or(&0);
 
@@ -480,7 +480,6 @@ impl<V> Branch<NodeRef<V>> {
                 debug_assert!(self.mask.word_idx() - word_idx >= 2);
                 debug_assert!(!self.prefix.is_empty());
 
-                // we don't include word or prior_word in the prefix
                 let key_prefix = &leaf.key_hash.0[..word_idx.saturating_sub(1)];
                 let delta_in_prefix = key_prefix
                     .iter()
@@ -493,11 +492,13 @@ impl<V> Branch<NodeRef<V>> {
 
                 let prefix_offset = word_idx.saturating_sub(self.prefix.len() + 1);
 
-                let new_prefix = leaf.key_hash.0[prefix_offset..word_idx.saturating_sub(1)].into();
+                let new_prefix = leaf.key_hash.0[prefix_offset..word_idx.saturating_sub(1)]
+                    .into();
                 let old_prefix = self.prefix[word_idx + 1 - prefix_offset..].into();
 
                 let branch_word = self.prefix[word_idx - prefix_offset];
                 let leaf_word = leaf.key_hash.0[word_idx];
+
                 let mask = BranchMask::new(word_idx as u32, branch_word, leaf_word);
 
                 let prior_word_idx = word_idx.wrapping_sub(1);
@@ -523,16 +524,16 @@ impl<V> Branch<NodeRef<V>> {
             debug_assert!(!mask.is_right_descendant(leaf_word));
 
             self.left = NodeRef::ModLeaf(leaf, None);
-            self.right = NodeRef::ModBranch(old_branch, None);
-
+            // Preserving the parent's stored idx in the new branch
+            self.right = NodeRef::ModBranch(old_branch, parent_idx);
             &mut self.left
         } else {
             debug_assert!(mask.is_right_descendant(leaf_word));
             debug_assert!(!mask.is_left_descendant(leaf_word));
 
-            self.left = NodeRef::ModBranch(old_branch, None);
+            // Preserving the parent's stored idx in the new branch
+            self.left = NodeRef::ModBranch(old_branch, parent_idx);
             self.right = NodeRef::ModLeaf(leaf, None);
-
             &mut self.right
         };
 
@@ -541,6 +542,7 @@ impl<V> Branch<NodeRef<V>> {
             _ => unreachable!(),
         }
     }
+
 
     /// Create a new branch above two leafs.
     /// Returns the new branch and a bool indicating if the new leaf is the right child.
@@ -610,7 +612,7 @@ impl<V> Branch<NodeRef<V>> {
 }
 
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Leaf<V> {
     pub key_hash: KeyHash,
     pub value: V,
@@ -642,5 +644,16 @@ impl<V: PortableHash> Leaf<V> {
         hasher.portable_update(self.key_hash.to_bytes());
         self.value.portable_hash(hasher);
         NodeHash::new(hasher.finalize_reset())
+    }
+}
+
+// This allows NodeRef::ModLeaf to be used with functions expecting AsRef<Leaf<V>>
+impl<V> AsRef<Leaf<V>> for NodeRef<V> {
+    #[inline]
+    fn as_ref(&self) -> &Leaf<V> {
+        match self {
+            NodeRef::ModLeaf(leaf, _) => leaf.as_ref(),
+            _ => panic!("Expected ModLeaf variant"),
+        }
     }
 }
