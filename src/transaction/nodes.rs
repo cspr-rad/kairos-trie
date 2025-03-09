@@ -146,7 +146,7 @@ impl<'s, V> From<StoredLeafRef<'s, V>> for NodeRef<V> {
     }
 }
 
-impl<'s, V> AsRef<Leaf<V>> for StoredLeafRef<'s, V> {
+impl<V> AsRef<Leaf<V>> for StoredLeafRef<'_, V> {
     #[inline]
     fn as_ref(&self) -> &Leaf<V> {
         self.leaf
